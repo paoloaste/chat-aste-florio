@@ -12,7 +12,7 @@ const port = process.env.PORT || 3000;
 const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`,
+  databaseURL: "https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/",
 });
 const db = admin.database();
 
