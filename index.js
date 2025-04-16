@@ -27,6 +27,9 @@ app.use(express.static('public'));
 
 // Webhook Twilio
 app.post('/webhook', (req, res) => {
+  console.log('🔔 Webhook attivato!');
+  console.log('📩 Body ricevuto:', req.body);
+
   const from = req.body.From || req.body.from;
   const to = req.body.To || req.body.to;
   const body = req.body.Body || req.body.body;
