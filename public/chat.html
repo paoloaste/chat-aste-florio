@@ -5,6 +5,14 @@
   <meta charset="UTF-8">
   <title>Chat Aste Florio (WhatsApp)</title>
   <style>
+    .chat-list li button {
+  display: none;
+}
+
+.chat-list li:hover button {
+  display: inline;
+}
+
     body {
       margin: 0;
       display: flex;
@@ -167,8 +175,15 @@ function renderSidebar() {
     return bT - aT;
   }).forEach(num => {
     const li = document.createElement('li');
-    li.innerHTML = `<span>${num}</span>${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}`;
-    li.onclick = () => loadChat(num, li);
+    li.innerHTML = `
+  <span>${num}</span>
+  ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
+  <button onclick="deleteChat('${num}')" style="background:none;border:none;color:red;font-size:16px;cursor:pointer;">✖️</button>
+`;
+
+li.onclick = (e) => {
+  if (e.target.tagName !== 'BUTTON') loadChat(num, li);
+};
     ul.appendChild(li);
   });
 }
@@ -252,3 +267,21 @@ loadAll();
 </script>
 </body>
 </html>
+function deleteChat(number) {
+  if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
+
+  fetch('/delete-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ number })
+  })
+  .then(res => {
+    if (res.ok) {
+      alert('Chat cancellata con successo');
+      loadAll(); // ricarica la sidebar aggiornata
+    } else {
+      alert('Errore durante la cancellazione della chat');
+    }
+  });
+}
+
