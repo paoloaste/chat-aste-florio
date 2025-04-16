@@ -2,50 +2,165 @@
 <html lang="it">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Chat Aste Florio</title>
   <style>
-    body { font-family: Arial; background: #f4f4f4; padding: 20px; }
-    #messages { max-width: 600px; margin: auto; background: white; padding: 10px; border-radius: 8px; height: 400px; overflow-y: scroll; }
-    .message { margin: 5px 0; }
-    .inbound { color: green; }
-    .outbound { color: blue; text-align: right; }
-    form { max-width: 600px; margin: 20px auto; display: flex; gap: 10px; }
-    input, button { padding: 10px; font-size: 16px; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #e5ddd5;
+      display: flex;
+      height: 100vh;
+    }
+    .sidebar {
+      width: 30%;
+      background: #f0f0f0;
+      border-right: 1px solid #ccc;
+      overflow-y: auto;
+    }
+    .chat-window {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+    }
+    .chat-header {
+      padding: 10px;
+      background: #075E54;
+      color: white;
+      font-weight: bold;
+    }
+    .messages {
+      flex: 1;
+      padding: 10px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .message {
+      max-width: 60%;
+      padding: 10px;
+      border-radius: 8px;
+      line-height: 1.4;
+    }
+    .inbound {
+      background: #dcf8c6;
+      align-self: flex-start;
+    }
+    .outbound {
+      background: #fff;
+      border: 1px solid #ddd;
+      align-self: flex-end;
+    }
+    .chat-form {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid #ccc;
+    }
+    .chat-form input {
+      padding: 10px;
+      flex: 1;
+      margin-right: 10px;
+      font-size: 16px;
+    }
+    .chat-form button {
+      padding: 10px 20px;
+      font-size: 16px;
+      background: #128C7E;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .contact {
+      padding: 12px;
+      border-bottom: 1px solid #ddd;
+      cursor: pointer;
+    }
+    .contact:hover {
+      background: #e0e0e0;
+    }
+    .active {
+      background: #d0d0d0 !important;
+    }
   </style>
 </head>
 <body>
-  <h2>📩 Chat Aste Florio (WhatsApp)</h2>
-  <div id="messages"></div>
-  <form id="chatForm">
-    <input type="text" id="to" placeholder="Numero cliente (es. 3934...)" required />
-    <input type="text" id="body" placeholder="Scrivi un messaggio..." required />
-    <button type="submit">Invia</button>
-  </form>
+  <div class="sidebar" id="chatList"></div>
+  <div class="chat-window">
+    <div class="chat-header" id="chatHeader">Nessuna chat selezionata</div>
+    <div class="messages" id="messages"></div>
+    <form class="chat-form" id="chatForm">
+      <input type="text" id="body" placeholder="Scrivi un messaggio..." required />
+      <button type="submit">Invia</button>
+    </form>
+  </div>
 
   <script>
+    let currentChat = null;
+    const dbUrl = 'https://chat-aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json';
+    const chatListDiv = document.getElementById('chatList');
+    const messagesDiv = document.getElementById('messages');
+    const chatHeader = document.getElementById('chatHeader');
+
     async function fetchMessages() {
-      const res = await fetch('https://chat-aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json');
+      const res = await fetch(dbUrl);
       const data = await res.json();
-      const messagesDiv = document.getElementById('messages');
-      messagesDiv.innerHTML = '';
+      const grouped = {};
       for (let key in data) {
         const msg = data[key];
+        if (!msg.to || !msg.from) continue;
+        const contact = msg.from.startsWith('whatsapp:+39') ? msg.from : msg.to;
+        if (!grouped[contact]) grouped[contact] = [];
+        grouped[contact].push(msg);
+      }
+
+      // sidebar
+      chatListDiv.innerHTML = '';
+      Object.keys(grouped).forEach(number => {
+        const contact = document.createElement('div');
+        contact.className = 'contact';
+        if (number === currentChat) contact.classList.add('active');
+        contact.textContent = number;
+        contact.onclick = () => {
+          currentChat = number;
+          renderMessages(grouped[number]);
+          updateChatList(grouped);
+        };
+        chatListDiv.appendChild(contact);
+      });
+
+      // se una chat è aperta, aggiorna i messaggi
+      if (currentChat && grouped[currentChat]) {
+        renderMessages(grouped[currentChat]);
+      }
+    }
+
+    function updateChatList(grouped) {
+      chatListDiv.querySelectorAll('.contact').forEach(div => {
+        div.classList.toggle('active', div.textContent === currentChat);
+      });
+      chatHeader.textContent = currentChat || 'Nessuna chat selezionata';
+    }
+
+    function renderMessages(messages) {
+      messagesDiv.innerHTML = '';
+      messages.sort((a, b) => a.timestamp - b.timestamp);
+      messages.forEach(msg => {
         const div = document.createElement('div');
         div.className = 'message ' + msg.direction;
-        div.textContent = `[${msg.from}] ${msg.body}`;
+        div.textContent = msg.body;
         messagesDiv.appendChild(div);
-      }
+      });
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    setInterval(fetchMessages, 3000);
-    fetchMessages();
-
     document.getElementById('chatForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const to = document.getElementById('to').value;
       const body = document.getElementById('body').value;
+      if (!currentChat) return alert('Seleziona prima una chat');
+      const to = currentChat.replace('whatsapp:', '');
       await fetch('/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -53,6 +168,9 @@
       });
       document.getElementById('body').value = '';
     });
+
+    setInterval(fetchMessages, 4000);
+    fetchMessages();
   </script>
 </body>
 </html>
