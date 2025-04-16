@@ -35,22 +35,26 @@ app.post('/webhook', async (req, res) => {
   const media = [];
 
   for (let i = 0; i < numMedia; i++) {
-    media.push({
-      url: req.body[`MediaUrl${i}`],
-      type: req.body[`MediaContentType${i}`]
-    });
+    const mediaUrl = req.body[`MediaUrl${i}`];
+    const mediaType = req.body[`MediaContentType${i}`];
+    if (mediaUrl && mediaType) {
+      media.push({ url: mediaUrl, type: mediaType });
+    }
   }
 
   if (!from || (!body && media.length === 0)) {
-    console.error('Webhook ricevuto con dati incompleti:', req.body);
+    console.error('❌ Webhook con dati incompleti:', req.body);
     return res.sendStatus(400);
   }
+
+  console.log('✅ Messaggio ricevuto:', { from, body, media });
 
   const ref = db.ref('messages').push();
   await ref.set({ from, to, body, media, direction: 'inbound', timestamp });
 
   res.sendStatus(200);
 });
+
 
 
 
