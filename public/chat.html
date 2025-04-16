@@ -1,176 +1,163 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
-  <meta charset="UTF-8" />
-  <title>Chat Aste Florio</title>
+  <meta charset="UTF-8">
+  <title>Chat Aste Florio (WhatsApp)</title>
   <style>
     body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background: #e5ddd5;
       display: flex;
-      height: 100vh;
+      margin: 0;
+      font-family: Arial, sans-serif;
     }
     .sidebar {
-      width: 30%;
-      background: #f0f0f0;
+      width: 250px;
+      background: #ededed;
       border-right: 1px solid #ccc;
       overflow-y: auto;
+    }
+    .sidebar h2 {
+      margin: 0;
+      padding: 10px;
+      background: #075e54;
+      color: white;
+    }
+    .chat-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .chat-list li {
+      padding: 10px;
+      cursor: pointer;
+      border-bottom: 1px solid #ccc;
+    }
+    .chat-list li:hover {
+      background: #f1f1f1;
     }
     .chat-window {
       flex: 1;
       display: flex;
       flex-direction: column;
-      background: #fff;
+      height: 100vh;
     }
     .chat-header {
-      padding: 10px;
-      background: #075E54;
+      background: #075e54;
       color: white;
+      padding: 10px;
       font-weight: bold;
     }
-    .messages {
+    .chat-messages {
       flex: 1;
       padding: 10px;
       overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+      background: #ece5dd;
     }
     .message {
-      max-width: 60%;
+      max-width: 70%;
+      margin: 5px 0;
       padding: 10px;
       border-radius: 8px;
-      line-height: 1.4;
+      clear: both;
     }
     .inbound {
-      background: #dcf8c6;
-      align-self: flex-start;
+      background: white;
+      float: left;
     }
     .outbound {
-      background: #fff;
-      border: 1px solid #ddd;
-      align-self: flex-end;
+      background: #dcf8c6;
+      float: right;
     }
-    .chat-form {
+    .chat-input {
       display: flex;
-      padding: 10px;
       border-top: 1px solid #ccc;
-    }
-    .chat-form input {
       padding: 10px;
-      flex: 1;
-      margin-right: 10px;
-      font-size: 16px;
+      background: white;
     }
-    .chat-form button {
-      padding: 10px 20px;
-      font-size: 16px;
-      background: #128C7E;
+    .chat-input input {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      margin-right: 5px;
+    }
+    .chat-input button {
+      padding: 10px 15px;
+      background: #075e54;
       color: white;
       border: none;
       border-radius: 5px;
       cursor: pointer;
     }
-    .contact {
-      padding: 12px;
-      border-bottom: 1px solid #ddd;
-      cursor: pointer;
-    }
-    .contact:hover {
-      background: #e0e0e0;
-    }
-    .active {
-      background: #d0d0d0 !important;
-    }
   </style>
 </head>
 <body>
-  <div class="sidebar" id="chatList"></div>
+  <div class="sidebar">
+    <h2>Conversazioni</h2>
+    <ul class="chat-list" id="chatList"></ul>
+  </div>
   <div class="chat-window">
     <div class="chat-header" id="chatHeader">Nessuna chat selezionata</div>
-    <div class="messages" id="messages"></div>
-    <form class="chat-form" id="chatForm">
-      <input type="text" id="body" placeholder="Scrivi un messaggio..." required />
-      <button type="submit">Invia</button>
-    </form>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input">
+      <input type="text" id="msgInput" placeholder="Scrivi un messaggio...">
+      <button onclick="sendMessage()">Invia</button>
+    </div>
   </div>
 
   <script>
-    let currentChat = null;
-    const dbUrl = 'https://chat-aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json';
-    const chatListDiv = document.getElementById('chatList');
-    const messagesDiv = document.getElementById('messages');
-    const chatHeader = document.getElementById('chatHeader');
+    let dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json';
+    let messages = {};
+    let grouped = {};
+    let selected = null;
 
-    async function fetchMessages() {
-      const res = await fetch(dbUrl);
-      const data = await res.json();
-      const grouped = {};
-      for (let key in data) {
-        const msg = data[key];
-        if (!msg.to || !msg.from) continue;
-        const contact = msg.from.startsWith('whatsapp:+39') ? msg.from : msg.to;
-        if (!grouped[contact]) grouped[contact] = [];
-        grouped[contact].push(msg);
+    fetch(dbUrl).then(res => res.json()).then(data => {
+      messages = data || {};
+      for (let id in messages) {
+        const msg = messages[id];
+        const from = (msg.from || '').replace('whatsapp:', '');
+        const to = (msg.to || '').replace('whatsapp:', '');
+        const key = msg.direction === 'inbound' ? from : to;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push({ ...msg, id });
       }
 
-      // sidebar
-      chatListDiv.innerHTML = '';
+      let chatList = document.getElementById('chatList');
+      chatList.innerHTML = '';
       Object.keys(grouped).forEach(number => {
-        const contact = document.createElement('div');
-        contact.className = 'contact';
-        if (number === currentChat) contact.classList.add('active');
-        contact.textContent = number;
-        contact.onclick = () => {
-          currentChat = number;
-          renderMessages(grouped[number]);
-          updateChatList(grouped);
-        };
-        chatListDiv.appendChild(contact);
+        let li = document.createElement('li');
+        li.innerText = number;
+        li.onclick = () => loadChat(number);
+        chatList.appendChild(li);
       });
-
-      // se una chat è aperta, aggiorna i messaggi
-      if (currentChat && grouped[currentChat]) {
-        renderMessages(grouped[currentChat]);
-      }
-    }
-
-    function updateChatList(grouped) {
-      chatListDiv.querySelectorAll('.contact').forEach(div => {
-        div.classList.toggle('active', div.textContent === currentChat);
-      });
-      chatHeader.textContent = currentChat || 'Nessuna chat selezionata';
-    }
-
-    function renderMessages(messages) {
-      messagesDiv.innerHTML = '';
-      messages.sort((a, b) => a.timestamp - b.timestamp);
-      messages.forEach(msg => {
-        const div = document.createElement('div');
-        div.className = 'message ' + msg.direction;
-        div.textContent = msg.body;
-        messagesDiv.appendChild(div);
-      });
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-
-    document.getElementById('chatForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const body = document.getElementById('body').value;
-      if (!currentChat) return alert('Seleziona prima una chat');
-      const to = currentChat.replace('whatsapp:', '');
-      await fetch('/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, body })
-      });
-      document.getElementById('body').value = '';
     });
 
-    setInterval(fetchMessages, 4000);
-    fetchMessages();
+    function loadChat(number) {
+      selected = number;
+      document.getElementById('chatHeader').innerText = number;
+      let chat = grouped[number] || [];
+      let chatMessages = document.getElementById('chatMessages');
+      chatMessages.innerHTML = '';
+      chat.sort((a, b) => a.timestamp - b.timestamp).forEach(msg => {
+        let div = document.createElement('div');
+        div.className = 'message ' + msg.direction;
+        div.innerText = msg.body;
+        chatMessages.appendChild(div);
+      });
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function sendMessage() {
+      let body = document.getElementById('msgInput').value.trim();
+      if (!body || !selected) return alert('Seleziona una chat e scrivi qualcosa.');
+      fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: selected, body })
+      }).then(res => {
+        if (res.ok) location.reload();
+        else alert('Errore invio');
+      });
+    }
   </script>
 </body>
 </html>
