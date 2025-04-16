@@ -1,4 +1,3 @@
-// 📁 index.js
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
@@ -9,15 +8,15 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Init Firebase
-const serviceAccount = require('./firebase-config.json');
+// Inizializza Firebase da FIREBASE_CONFIG
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: `https://${serviceAccount.project_id}.firebaseio.com`,
 });
 const db = admin.database();
 
-// Init Twilio
+// Inizializza Twilio
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
 app.use(cors());
@@ -25,7 +24,12 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Webhook Twilio
+// Endpoint test
+app.get('/', (req, res) => {
+  res.send("✅ Server attivo - Aste Florio");
+});
+
+// Webhook per ricevere messaggi WhatsApp
 app.post('/webhook', (req, res) => {
   console.log('🔔 Webhook attivato!');
   console.log('📩 Body ricevuto:', req.body);
@@ -41,7 +45,7 @@ app.post('/webhook', (req, res) => {
   res.sendStatus(200);
 });
 
-// Invia risposta
+// Endpoint per inviare messaggi WhatsApp
 app.post('/send', async (req, res) => {
   const { to, body } = req.body;
   try {
