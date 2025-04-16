@@ -7,13 +7,15 @@
     body {
       display: flex;
       margin: 0;
-      font-family: Arial, sans-serif;
+      font-family: "Segoe UI", sans-serif;
+      background: #f0f2f5;
     }
     .sidebar {
-      width: 250px;
-      background: #ededed;
+      width: 300px;
+      background: #fff;
       border-right: 1px solid #ccc;
       overflow-y: auto;
+      height: 100vh;
     }
     .sidebar h2 {
       margin: 0;
@@ -27,12 +29,24 @@
       margin: 0;
     }
     .chat-list li {
-      padding: 10px;
+      padding: 12px;
       cursor: pointer;
-      border-bottom: 1px solid #ccc;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      justify-content: space-between;
     }
     .chat-list li:hover {
-      background: #f1f1f1;
+      background: #f6f6f6;
+    }
+    .chat-list li.active {
+      background: #dcf8c6;
+    }
+    .badge {
+      background: #25d366;
+      color: white;
+      border-radius: 10px;
+      padding: 2px 6px;
+      font-size: 0.75em;
     }
     .chat-window {
       flex: 1;
@@ -50,14 +64,21 @@
       flex: 1;
       padding: 10px;
       overflow-y: auto;
-      background: #ece5dd;
+      background: #e5ddd5;
+    }
+    .date-divider {
+      text-align: center;
+      font-size: 0.8em;
+      margin: 10px auto;
+      color: #555;
     }
     .message {
-      max-width: 70%;
+      max-width: 60%;
       margin: 5px 0;
-      padding: 10px;
+      padding: 8px 12px;
       border-radius: 8px;
       clear: both;
+      position: relative;
     }
     .inbound {
       background: white;
@@ -66,6 +87,13 @@
     .outbound {
       background: #dcf8c6;
       float: right;
+    }
+    .timestamp {
+      font-size: 0.7em;
+      color: #555;
+      position: absolute;
+      bottom: 3px;
+      right: 8px;
     }
     .chat-input {
       display: flex;
@@ -99,7 +127,7 @@
     <div class="chat-header" id="chatHeader">Nessuna chat selezionata</div>
     <div class="chat-messages" id="chatMessages"></div>
     <div class="chat-input">
-      <input type="text" id="msgInput" placeholder="Scrivi un messaggio...">
+      <input type="text" id="msgInput" placeholder="Scrivi un messaggio..." onkeydown="handleKey(event)">
       <button onclick="sendMessage()">Invia</button>
     </div>
   </div>
@@ -108,6 +136,7 @@
     let dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json';
     let messages = {};
     let grouped = {};
+    let unread = {};
     let selected = null;
 
     fetch(dbUrl).then(res => res.json()).then(data => {
@@ -119,31 +148,73 @@
         const key = msg.direction === 'inbound' ? from : to;
         if (!grouped[key]) grouped[key] = [];
         grouped[key].push({ ...msg, id });
+        if (!unread[key]) unread[key] = 0;
+        if (msg.direction === 'inbound') unread[key]++;
       }
 
       let chatList = document.getElementById('chatList');
       chatList.innerHTML = '';
-      Object.keys(grouped).forEach(number => {
+      Object.keys(grouped).sort((a, b) => {
+        const lastA = grouped[a].at(-1).timestamp;
+        const lastB = grouped[b].at(-1).timestamp;
+        return lastB - lastA;
+      }).forEach(number => {
         let li = document.createElement('li');
-        li.innerText = number;
-        li.onclick = () => loadChat(number);
+        li.innerHTML = `<span>${number}</span>` + (unread[number] ? `<span class="badge">${unread[number]}</span>` : '');
+        li.onclick = () => loadChat(number, li);
         chatList.appendChild(li);
       });
     });
 
-    function loadChat(number) {
+    function formatDate(ts) {
+      const d = new Date(ts);
+      return d.toLocaleDateString('it-IT');
+    }
+
+    function formatTime(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function loadChat(number, liEl) {
       selected = number;
       document.getElementById('chatHeader').innerText = number;
+      document.querySelectorAll('.chat-list li').forEach(li => li.classList.remove('active'));
+      liEl.classList.add('active');
+      unread[number] = 0;
+
       let chat = grouped[number] || [];
       let chatMessages = document.getElementById('chatMessages');
       chatMessages.innerHTML = '';
+
+      let lastDate = '';
       chat.sort((a, b) => a.timestamp - b.timestamp).forEach(msg => {
+        let d = formatDate(msg.timestamp);
+        if (d !== lastDate) {
+          let divDate = document.createElement('div');
+          divDate.className = 'date-divider';
+          divDate.innerText = d;
+          chatMessages.appendChild(divDate);
+          lastDate = d;
+        }
+
         let div = document.createElement('div');
         div.className = 'message ' + msg.direction;
         div.innerText = msg.body;
+
+        let time = document.createElement('span');
+        time.className = 'timestamp';
+        time.innerText = formatTime(msg.timestamp);
+        div.appendChild(time);
+
         chatMessages.appendChild(div);
       });
+
       chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function handleKey(e) {
+      if (e.key === 'Enter') sendMessage();
     }
 
     function sendMessage() {
@@ -154,8 +225,18 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to: selected, body })
       }).then(res => {
-        if (res.ok) location.reload();
-        else alert('Errore invio');
+        if (res.ok) {
+          document.getElementById('msgInput').value = '';
+          const msg = {
+            body,
+            from: 'me',
+            to: selected,
+            timestamp: Date.now(),
+            direction: 'outbound'
+          };
+          grouped[selected].push(msg);
+          loadChat(selected, document.querySelector('.chat-list li.active'));
+        } else alert('Errore invio');
       });
     }
   </script>
