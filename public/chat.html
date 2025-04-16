@@ -34,6 +34,7 @@
       border-bottom: 1px solid #eee;
       display: flex;
       justify-content: space-between;
+      align-items: center;
     }
     .chat-list li:hover {
       background: #f6f6f6;
@@ -79,6 +80,7 @@
       border-radius: 8px;
       clear: both;
       position: relative;
+      display: inline-block;
     }
     .inbound {
       background: white;
@@ -91,9 +93,9 @@
     .timestamp {
       font-size: 0.7em;
       color: #555;
-      position: absolute;
-      bottom: 3px;
-      right: 8px;
+      display: block;
+      text-align: right;
+      margin-top: 4px;
     }
     .chat-input {
       display: flex;
@@ -152,7 +154,7 @@
         if (msg.direction === 'inbound') unread[key]++;
       }
 
-      let chatList = document.getElementById('chatList');
+      const chatList = document.getElementById('chatList');
       chatList.innerHTML = '';
       Object.keys(grouped).sort((a, b) => {
         const lastA = grouped[a].at(-1).timestamp;
@@ -182,27 +184,28 @@
       document.querySelectorAll('.chat-list li').forEach(li => li.classList.remove('active'));
       liEl.classList.add('active');
       unread[number] = 0;
+      liEl.querySelector('.badge')?.remove();
 
-      let chat = grouped[number] || [];
-      let chatMessages = document.getElementById('chatMessages');
+      const chat = grouped[number] || [];
+      const chatMessages = document.getElementById('chatMessages');
       chatMessages.innerHTML = '';
 
       let lastDate = '';
       chat.sort((a, b) => a.timestamp - b.timestamp).forEach(msg => {
         let d = formatDate(msg.timestamp);
         if (d !== lastDate) {
-          let divDate = document.createElement('div');
+          const divDate = document.createElement('div');
           divDate.className = 'date-divider';
           divDate.innerText = d;
           chatMessages.appendChild(divDate);
           lastDate = d;
         }
 
-        let div = document.createElement('div');
+        const div = document.createElement('div');
         div.className = 'message ' + msg.direction;
         div.innerText = msg.body;
 
-        let time = document.createElement('span');
+        const time = document.createElement('span');
         time.className = 'timestamp';
         time.innerText = formatTime(msg.timestamp);
         div.appendChild(time);
@@ -218,7 +221,7 @@
     }
 
     function sendMessage() {
-      let body = document.getElementById('msgInput').value.trim();
+      const body = document.getElementById('msgInput').value.trim();
       if (!body || !selected) return alert('Seleziona una chat e scrivi qualcosa.');
       fetch('/send', {
         method: 'POST',
