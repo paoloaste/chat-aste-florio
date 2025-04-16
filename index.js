@@ -38,7 +38,10 @@ app.post('/webhook', async (req, res) => {
     const mediaUrl = req.body[`MediaUrl${i}`];
     const mediaType = req.body[`MediaContentType${i}`];
     if (mediaUrl && mediaType) {
-      media.push({ url: mediaUrl, type: mediaType });
+      media.push({
+        url: mediaUrl,
+        type: mediaType
+      });
     }
   }
 
@@ -47,13 +50,21 @@ app.post('/webhook', async (req, res) => {
     return res.sendStatus(400);
   }
 
-  console.log('✅ Messaggio ricevuto:', { from, body, media });
+  console.log('✅ Messaggio ricevuto:', { from, to, body, media });
 
   const ref = db.ref('messages').push();
-  await ref.set({ from, to, body, media, direction: 'inbound', timestamp });
+  await ref.set({
+    from,
+    to,
+    body,
+    media, // 🎯 questo deve essere presente!
+    direction: 'inbound',
+    timestamp
+  });
 
   res.sendStatus(200);
 });
+
 
 
 
