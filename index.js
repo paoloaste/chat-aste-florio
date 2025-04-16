@@ -27,9 +27,9 @@ app.use(express.static('public'));
 
 // Webhook Twilio
 app.post('/webhook', (req, res) => {
-  const from = req.body.From;
-  const to = req.body.To;
-  const body = req.body.Body;
+  const from = req.body.From || req.body.from;
+  const to = req.body.To || req.body.to;
+  const body = req.body.Body || req.body.body;
   const timestamp = Date.now();
 
   const ref = db.ref('messages').push();
