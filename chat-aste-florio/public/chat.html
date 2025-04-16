@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat Aste Florio</title>
+  <style>
+    body { font-family: Arial; background: #f4f4f4; padding: 20px; }
+    #messages { max-width: 600px; margin: auto; background: white; padding: 10px; border-radius: 8px; height: 400px; overflow-y: scroll; }
+    .message { margin: 5px 0; }
+    .inbound { color: green; }
+    .outbound { color: blue; text-align: right; }
+    form { max-width: 600px; margin: 20px auto; display: flex; gap: 10px; }
+    input, button { padding: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>📩 Chat Aste Florio (WhatsApp)</h2>
+  <div id="messages"></div>
+  <form id="chatForm">
+    <input type="text" id="to" placeholder="Numero cliente (es. 3934...)" required />
+    <input type="text" id="body" placeholder="Scrivi un messaggio..." required />
+    <button type="submit">Invia</button>
+  </form>
+
+  <script>
+    async function fetchMessages() {
+      const res = await fetch('https://chat-aste-florio-default-rtdb.europe-west1.firebasedatabase.app/messages.json');
+      const data = await res.json();
+      const messagesDiv = document.getElementById('messages');
+      messagesDiv.innerHTML = '';
+      for (let key in data) {
+        const msg = data[key];
+        const div = document.createElement('div');
+        div.className = 'message ' + msg.direction;
+        div.textContent = `[${msg.from}] ${msg.body}`;
+        messagesDiv.appendChild(div);
+      }
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    setInterval(fetchMessages, 3000);
+    fetchMessages();
+
+    document.getElementById('chatForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const to = document.getElementById('to').value;
+      const body = document.getElementById('body').value;
+      await fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, body })
+      });
+      document.getElementById('body').value = '';
+    });
+  </script>
+</body>
+</html>
