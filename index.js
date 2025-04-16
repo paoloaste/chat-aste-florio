@@ -34,9 +34,9 @@ app.post('/webhook', (req, res) => {
   console.log('🔔 Webhook attivato!');
   console.log('📩 Body ricevuto:', req.body);
 
-  const from = req.body.From || req.body.from;
-  const to = req.body.To || req.body.to;
-  const body = req.body.Body || req.body.body;
+  const from = req.body.From || req.body.from || req.body.Author || 'whatsapp:undefined';
+  const to = req.body.To || req.body.to || 'whatsapp:undefined';
+  const body = req.body.Body || req.body.body || '';
   const timestamp = Date.now();
 
   const ref = db.ref('messages').push();
