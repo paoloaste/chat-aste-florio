@@ -228,8 +228,24 @@ function loadChat(number, li) {
     }
 
     const div = document.createElement('div');
-    div.className = 'message ' + m.direction;
-    div.innerHTML = m.body + `<div class="timestamp">${formatTime(m.timestamp)}</div>`;
+div.className = 'message ' + m.direction;
+
+let html = '';
+if (m.body) html += m.body + '<br>';
+
+if (m.media && Array.isArray(m.media)) {
+  m.media.forEach(media => {
+    if (media.type.startsWith('image/')) {
+      html += `<img src="${media.url}" style="max-width: 200px; border-radius: 8px; margin-top: 5px;"><br>`;
+    } else {
+      const fileName = media.url.split('/').pop().split('?')[0];
+      html += `<a href="${media.url}" target="_blank">📎 ${fileName}</a><br>`;
+    }
+  });
+}
+
+div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)}</div>`;
+
     box.appendChild(div);
   });
 
