@@ -31,16 +31,27 @@ app.post('/webhook', async (req, res) => {
   const body = req.body.Body || req.body.body || '';
   const timestamp = Date.now();
 
-  if (!from || !body) {
+  const numMedia = parseInt(req.body.NumMedia || '0');
+  const media = [];
+
+  for (let i = 0; i < numMedia; i++) {
+    media.push({
+      url: req.body[`MediaUrl${i}`],
+      type: req.body[`MediaContentType${i}`]
+    });
+  }
+
+  if (!from || (!body && media.length === 0)) {
     console.error('Webhook ricevuto con dati incompleti:', req.body);
     return res.sendStatus(400);
   }
 
   const ref = db.ref('messages').push();
-  await ref.set({ from, to, body, direction: 'inbound', timestamp });
+  await ref.set({ from, to, body, media, direction: 'inbound', timestamp });
 
   res.sendStatus(200);
 });
+
 
 
 // Invia risposta
