@@ -68,3 +68,31 @@ app.post('/read', async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Server online sulla porta ${port}`);
 });
+
+// Cancella tutti i messaggi di una chat
+app.post('/delete-chat', async (req, res) => {
+  const { number } = req.body;
+  try {
+    const snapshot = await db.ref('messages').once('value');
+    const messages = snapshot.val();
+    const updates = {};
+
+    for (let id in messages) {
+      const m = messages[id];
+      const phone = m.direction === 'inbound'
+        ? m.from.replace('whatsapp:', '')
+        : m.to.replace('whatsapp:', '');
+
+      if (phone === number) {
+        updates[`/messages/${id}`] = null;
+      }
+    }
+
+    await db.ref().update(updates);
+    await db.ref('readStatus/' + number).remove(); // opzionale: resetta lo stato lettura
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Errore durante la cancellazione:', err);
+    res.status(500).send('Errore cancellazione');
+  }
+});
