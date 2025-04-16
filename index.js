@@ -10,7 +10,7 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-const serviceAccount = require('./firebase-config.json');
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app'
