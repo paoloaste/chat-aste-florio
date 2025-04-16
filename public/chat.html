@@ -264,10 +264,7 @@ function sendMessage() {
 }
 
 loadAll();
-</script>
-</body>
-</html>
-function deleteChat(number) {
+  function deleteChat(number) {
   if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
 
   fetch('/delete-chat', {
@@ -284,4 +281,6 @@ function deleteChat(number) {
     }
   });
 }
-
+</script>
+</body>
+</html>
