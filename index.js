@@ -27,15 +27,21 @@ app.use(express.static('public'));
 // Webhook Twilio
 app.post('/webhook', async (req, res) => {
   const from = req.body.From || req.body.from || req.body.Author;
-  const to = req.body.To || req.body.to;
-  const body = req.body.Body || req.body.body;
+  const to = req.body.To || req.body.to || req.body.Recipient || 'unknown';
+  const body = req.body.Body || req.body.body || '';
   const timestamp = Date.now();
+
+  if (!from || !body) {
+    console.error('Webhook ricevuto con dati incompleti:', req.body);
+    return res.sendStatus(400);
+  }
 
   const ref = db.ref('messages').push();
   await ref.set({ from, to, body, direction: 'inbound', timestamp });
 
   res.sendStatus(200);
 });
+
 
 // Invia risposta
 app.post('/send', async (req, res) => {
