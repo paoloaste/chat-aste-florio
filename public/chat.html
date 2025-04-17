@@ -152,9 +152,13 @@ async function loadAll() {
 
   for (let id in messages) {
     const m = messages[id];
-    const phone = m.direction === 'inbound' ? m.from.replace('whatsapp:', '') : m.to.replace('whatsapp:', '');
+    const isInbound = m.direction === 'inbound' || m.from === 'cliente';
+    const phone = isInbound
+      ? (m.from || '').replace('whatsapp:', '')
+      : (m.to || '').replace('whatsapp:', '');
     if (!grouped[phone]) grouped[phone] = [];
     grouped[phone].push({...m, id});
+    m.direction = m.direction || (m.from === "azienda" ? "outbound" : "inbound");
   }
 
   for (let phone in grouped) {
@@ -235,7 +239,7 @@ if (m.body) {
 } else if (m.text) {
   html += m.text + '<br>';
 } else if (m.params && Array.isArray(m.params)) {
-  html += `[TEMPLATE] ${m.template}: ${m.params.join(" / ")}` + '<br>';
+  html += `[${m.template}] ` + m.params.join(" / ") + "<br>";
 }
 
 if (m.media && Array.isArray(m.media)) {
