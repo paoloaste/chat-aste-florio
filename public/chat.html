@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="it">
 <head>
@@ -231,7 +230,13 @@ function loadChat(number, li) {
 div.className = 'message ' + m.direction;
 
 let html = '';
-if (m.body) html += m.body + '<br>';
+if (m.body) {
+  html += m.body + '<br>';
+} else if (m.text) {
+  html += m.text + '<br>';
+} else if (m.params && Array.isArray(m.params)) {
+  html += `[TEMPLATE] ${m.template}: ${m.params.join(" / ")}` + '<br>';
+}
 
 if (m.media && Array.isArray(m.media)) {
   m.media.forEach(media => {
