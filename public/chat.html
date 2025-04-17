@@ -235,7 +235,7 @@ div.className = 'message ' + m.direction;
 
 let html = '';
 if (m.body) {
-  html += m.body + '<br>';
+  html += m.body.replace(/\\n/g, "<br>") + '<br>';
 } else if (m.text) {
   html += m.text + '<br>';
 } else if (m.params && Array.isArray(m.params)) {
