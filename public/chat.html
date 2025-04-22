@@ -3,19 +3,36 @@
 <head>
   <meta charset="UTF-8">
   <title>Chat Aste Florio (WhatsApp)</title>
+
+  <!-- Firebase App (core) + Auth + Database -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js"></script>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAtsIoHSxlRXRLRPulOiqIJtuxOWIbZGag",
+      authDomain: "aste-florio.firebaseapp.com",
+      databaseURL: "https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "aste-florio",
+    };
+    firebase.initializeApp(firebaseConfig);
+  </script>
+
   <style>
     .chat-list li button {
-  display: none;
-}
-
-.chat-list li:hover button {
-  display: inline;
-}
-
+      display: none;
+    }
+    .chat-list li:hover button {
+      display: inline;
+    }
     body {
       margin: 0;
       display: flex;
       font-family: 'Segoe UI', sans-serif;
+    }
+    .sidebar, .chat-window {
+      display: none; /* Nasconde l'interfaccia chat all'inizio */
     }
     .sidebar {
       width: 280px;
@@ -75,7 +92,7 @@
       padding: 10px;
       display: flex;
       flex-direction: column;
-}
+    }
     .message {
       display: inline-block;
       max-width: 60%;
@@ -128,209 +145,243 @@
   </style>
 </head>
 <body>
-<div class="sidebar">
-  <h2>Conversazioni</h2>
-  <ul class="chat-list" id="chatList"></ul>
-</div>
-<div class="chat-window">
-  <div class="chat-header" id="chatHeader">Nessuna chat selezionata</div>
-  <div class="chat-messages" id="chatMessages"></div>
-  <div class="chat-input">
-    <input type="text" id="msgInput" placeholder="Scrivi un messaggio..." onkeydown="handleKey(event)">
-    <button onclick="sendMessage()">Invia</button>
+  <div id="loginBox" style="margin:auto; padding:20px; display:flex; flex-direction:column; width:300px; gap:10px;">
+    <h2>Login Aste Florio</h2>
+    <input type="email" id="email" placeholder="Email" style="padding:8px;">
+    <input type="password" id="password" placeholder="Password" style="padding:8px;">
+    <button onclick="login()" style="padding:8px;">Accedi</button>
   </div>
-</div>
 
-<script>
-let grouped = {}, unread = {}, readStatus = {}, selected = null;
-const dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app';
+  <div class="sidebar">
+    <h2>
+      Conversazioni
+      <button onclick="logout()" style="float:right; background:none; border:none; color:white;">Esci</button>
+    </h2>
+    <ul class="chat-list" id="chatList"></ul>
+  </div>
+  <div class="chat-window">
+    <div class="chat-header" id="chatHeader">Nessuna chat selezionata</div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input">
+      <input type="text" id="msgInput" placeholder="Scrivi un messaggio..." onkeydown="handleKey(event)">
+      <button onclick="sendMessage()">Invia</button>
+    </div>
+  </div>
 
-async function loadAll() {
-  const messages = await fetch(dbUrl + '/messages.json').then(r => r.json()) || {};
-  const status = await fetch(dbUrl + '/readStatus.json').then(r => r.json()) || {};
-  grouped = {}; unread = {}; readStatus = status;
-
-  for (let id in messages) {
-    const m = messages[id];
-    const isInbound = m.direction === 'inbound' || m.from === 'cliente';
-    const phone = isInbound
-      ? (m.from || '').replace('whatsapp:', '')
-      : (m.to || '').replace('whatsapp:', '');
-    if (!grouped[phone]) grouped[phone] = [];
-    grouped[phone].push({...m, id});
-    m.direction = m.direction || (m.from === "azienda" ? "outbound" : "inbound");
-  }
-
-  for (let phone in grouped) {
-    const lastRead = readStatus[phone] || 0;
-    unread[phone] = grouped[phone].filter(m => m.direction === 'inbound' && m.timestamp > lastRead).length;
-  }
-
-  renderSidebar();
-}
-
-function renderSidebar() {
-  const ul = document.getElementById('chatList');
-  ul.innerHTML = '';
-  Object.keys(grouped).sort((a, b) => {
-    const aT = grouped[a].at(-1).timestamp;
-    const bT = grouped[b].at(-1).timestamp;
-    return bT - aT;
-  }).forEach(num => {
-    const li = document.createElement('li');
-    li.innerHTML = `
-  <span>${num}</span>
-  ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
-  <button onclick="deleteChat('${num}')" style="background:none;border:none;color:red;font-size:16px;cursor:pointer;">✖️</button>
-`;
-
-li.onclick = (e) => {
-  if (e.target.tagName !== 'BUTTON') loadChat(num, li);
-};
-    ul.appendChild(li);
-  });
-}
-
-function formatDate(ts) {
-  return new Date(ts).toLocaleDateString('it-IT');
-}
-
-function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-}
-
-async function loadChat(number, li) {
-  selected = number;
-  document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
-  li.classList.add('active');
-  document.getElementById('chatHeader').innerText = number;
-
-  // aggiorna stato lettura
-  fetch('/read', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ number })
-  });
-
-  unread[number] = 0;
-  li.querySelector('.badge')?.remove();
-
-  const box = document.getElementById('chatMessages');
-  box.innerHTML = '';
-  const sorted = grouped[number].sort((a, b) => a.timestamp - b.timestamp);
-
-  // Aggiungi il caricamento degli status
-  const statuses = await loadStatuses();
-
-  let lastDate = '';
-
-  sorted.forEach(m => {
-    const d = formatDate(m.timestamp);
-    if (d !== lastDate) {
-      const divDate = document.createElement('div');
-      divDate.className = 'date-divider';
-      divDate.innerText = d;
-      box.appendChild(divDate);
-      lastDate = d;
-    }
-
-    const div = document.createElement('div');
-    div.className = 'message ' + m.direction;
-
-    // Aggiungi il blocco per lo stato del messaggio
-    let statusHtml = '';
-    if (m.direction === 'outbound' && m.sid && statuses) {
-      for (let key in statuses) {
-        if (statuses[key].sid === m.sid) {
-          const s = statuses[key];
-          if (s.status === 'delivered') statusHtml = '✅ delivered';
-          else if (s.status === 'failed') statusHtml = '❌ failed';
-          else statusHtml = '⏳ ' + s.status;
-          break;
-        }
+  <script>
+    firebase.auth().onAuthStateChanged(user => {
+      if (user) {
+        document.getElementById('loginBox').style.display = 'none';
+        document.querySelector('.sidebar').style.display = 'block';
+        document.querySelector('.chat-window').style.display = 'flex';
+        loadAll();
+      } else {
+        document.getElementById('loginBox').style.display = 'flex';
+        document.querySelector('.sidebar').style.display = 'none';
+        document.querySelector('.chat-window').style.display = 'none';
       }
+    });
+
+    function login() {
+      const email = document.getElementById('email').value.trim();
+      const pass = document.getElementById('password').value.trim();
+      firebase.auth().signInWithEmailAndPassword(email, pass)
+        .catch(err => alert("Errore login: " + err.message));
     }
 
-    let html = '';
-    if (m.body) {
-      html += m.body.replace(/\\n/g, "<br>") + '<br>';
-    } else if (m.text) {
-      html += m.text + '<br>';
-    } else if (m.params && Array.isArray(m.params)) {
-      html += `[${m.template}] ` + m.params.join(" / ") + "<br>";
+    function logout() {
+      firebase.auth().signOut();
     }
 
-    if (m.media && Array.isArray(m.media)) {
-      m.media.forEach(media => {
-        if (media.type.startsWith('image/')) {
-          html += `<img src="${media.url}" style="max-width: 200px; border-radius: 8px; margin-top: 5px;"><br>`;
-        } else {
-          const fileName = media.url.split('/').pop().split('?')[0];
-          html += `<a href="${media.url}" target="_blank">📎 ${fileName}</a><br>`;
+    let grouped = {}, unread = {}, readStatus = {}, selected = null;
+    const dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app';
+
+    async function loadAll() {
+      const messages = await fetch(dbUrl + '/messages.json').then(r => r.json()) || {};
+      const status = await fetch(dbUrl + '/readStatus.json').then(r => r.json()) || {};
+      grouped = {}; unread = {}; readStatus = status;
+
+      for (let id in messages) {
+        const m = messages[id];
+        const isInbound = m.direction === 'inbound' || m.from === 'cliente';
+        const phone = isInbound
+          ? (m.from || '').replace('whatsapp:', '')
+          : (m.to || '').replace('whatsapp:', '');
+        if (!grouped[phone]) grouped[phone] = [];
+        grouped[phone].push({...m, id});
+        m.direction = m.direction || (m.from === "azienda" ? "outbound" : "inbound");
+      }
+
+      for (let phone in grouped) {
+        const lastRead = readStatus[phone] || 0;
+        unread[phone] = grouped[phone].filter(m => m.direction === 'inbound' && m.timestamp > lastRead).length;
+      }
+
+      renderSidebar();
+    }
+
+    function renderSidebar() {
+      const ul = document.getElementById('chatList');
+      ul.innerHTML = '';
+      Object.keys(grouped).sort((a, b) => {
+        const aT = grouped[a].at(-1).timestamp;
+        const bT = grouped[b].at(-1).timestamp;
+        return bT - aT;
+      }).forEach(num => {
+        const li = document.createElement('li');
+        li.innerHTML = `
+      <span>${num}</span>
+      ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
+      <button onclick="deleteChat('${num}')" style="background:none;border:none;color:red;font-size:16px;cursor:pointer;">✖️</button>
+    `;
+
+    li.onclick = (e) => {
+      if (e.target.tagName !== 'BUTTON') loadChat(num, li);
+    };
+        ul.appendChild(li);
+      });
+    }
+
+    function formatDate(ts) {
+      return new Date(ts).toLocaleDateString('it-IT');
+    }
+
+    function formatTime(ts) {
+      return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    async function loadChat(number, li) {
+      selected = number;
+      document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
+      li.classList.add('active');
+      document.getElementById('chatHeader').innerText = number;
+
+      // aggiorna stato lettura
+      fetch('/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number })
+      });
+
+      unread[number] = 0;
+      li.querySelector('.badge')?.remove();
+
+      const box = document.getElementById('chatMessages');
+      box.innerHTML = '';
+      const sorted = grouped[number].sort((a, b) => a.timestamp - b.timestamp);
+
+      // Aggiungi il caricamento degli status
+      const statuses = await loadStatuses();
+
+      let lastDate = '';
+
+      sorted.forEach(m => {
+        const d = formatDate(m.timestamp);
+        if (d !== lastDate) {
+          const divDate = document.createElement('div');
+          divDate.className = 'date-divider';
+          divDate.innerText = d;
+          box.appendChild(divDate);
+          lastDate = d;
+        }
+
+        const div = document.createElement('div');
+        div.className = 'message ' + m.direction;
+
+        // Aggiungi il blocco per lo stato del messaggio
+        let statusHtml = '';
+        if (m.direction === 'outbound' && m.sid && statuses) {
+          for (let key in statuses) {
+            if (statuses[key].sid === m.sid) {
+              const s = statuses[key];
+              if (s.status === 'delivered') statusHtml = '✅ delivered';
+              else if (s.status === 'failed') statusHtml = '❌ failed';
+              else statusHtml = '⏳ ' + s.status;
+              break;
+            }
+          }
+        }
+
+        let html = '';
+        if (m.body) {
+          html += m.body.replace(/\\n/g, "<br>") + '<br>';
+        } else if (m.text) {
+          html += m.text + '<br>';
+        } else if (m.params && Array.isArray(m.params)) {
+          html += `[${m.template}] ` + m.params.join(" / ") + "<br>";
+        }
+
+        if (m.media && Array.isArray(m.media)) {
+          m.media.forEach(media => {
+            if (media.type.startsWith('image/')) {
+              html += `<img src="${media.url}" style="max-width: 200px; border-radius: 8px; margin-top: 5px;"><br>`;
+            } else {
+              const fileName = media.url.split('/').pop().split('?')[0];
+              html += `<a href="${media.url}" target="_blank">📎 ${fileName}</a><br>`;
+            }
+          });
+        }
+
+        div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)} ${statusHtml}</div>`;
+
+        box.appendChild(div);
+      });
+
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function handleKey(e) {
+      if (e.key === 'Enter') sendMessage();
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('msgInput');
+      const body = input.value.trim();
+      if (!selected || !body) return;
+      fetch('/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ to: selected, body })
+      }).then(res => {
+        if (res.ok) {
+          input.value = '';
+          grouped[selected].push({
+            from: 'me',
+            to: selected,
+            direction: 'outbound',
+            timestamp: Date.now(),
+            body
+          });
+          loadChat(selected, document.querySelector('.chat-list li.active'));
         }
       });
     }
 
-    div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)} ${statusHtml}</div>`;
+    // 🔄 Carica gli status da Firebase
+    async function loadStatuses() {
+      const res = await fetch('https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/logs/status.json');
+      return await res.json() || {};
+    }
 
-    box.appendChild(div);
-  });
+    // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
-  box.scrollTop = box.scrollHeight;
-}
+    function deleteChat(number) {
+      if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
 
-function handleKey(e) {
-  if (e.key === 'Enter') sendMessage();
-}
-
-function sendMessage() {
-  const input = document.getElementById('msgInput');
-  const body = input.value.trim();
-  if (!selected || !body) return;
-  fetch('/send', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ to: selected, body })
-  }).then(res => {
-    if (res.ok) {
-      input.value = '';
-      grouped[selected].push({
-        from: 'me',
-        to: selected,
-        direction: 'outbound',
-        timestamp: Date.now(),
-        body
+      fetch('/delete-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number })
+      })
+      .then(res => {
+        if (res.ok) {
+          alert('Chat cancellata con successo');
+          loadAll(); // ricarica la sidebar aggiornata
+        } else {
+          alert('Errore durante la cancellazione della chat');
+        }
       });
-      loadChat(selected, document.querySelector('.chat-list li.active'));
     }
-  });
-}
-
-// 🔄 Carica gli status da Firebase
-async function loadStatuses() {
-  const res = await fetch('https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/logs/status.json');
-  return await res.json() || {};
-}
-
-loadAll();
-
-  function deleteChat(number) {
-  if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
-
-  fetch('/delete-chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ number })
-  })
-  .then(res => {
-    if (res.ok) {
-      alert('Chat cancellata con successo');
-      loadAll(); // ricarica la sidebar aggiornata
-    } else {
-      alert('Errore durante la cancellazione della chat');
-    }
-  });
-}
-</script>
+  </script>
 </body>
 </html>
