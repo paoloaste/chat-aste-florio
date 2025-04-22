@@ -65,9 +65,34 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 });
 
+// ✅ Endpoint per ricevere gli aggiornamenti di stato da Twilio
+app.post('/status', async (req, res) => {
+  try {
+    const {
+      MessageSid,
+      MessageStatus,
+      To,
+      ErrorCode,
+      ErrorMessage
+    } = req.body;
 
+    console.log("📬 Twilio Status Callback:", req.body);
 
+    await db.ref('logs/status').push({
+      sid: MessageSid,
+      status: MessageStatus,
+      to: To,
+      errorCode: ErrorCode || null,
+      errorMessage: ErrorMessage || null,
+      timestamp: Date.now()
+    });
 
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Errore nella status callback:", err);
+    res.sendStatus(500);
+  }
+});
 
 // Invia risposta
 app.post('/send', async (req, res) => {
