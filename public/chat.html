@@ -285,7 +285,8 @@
         const div = document.createElement('div');
         div.className = 'message ' + m.direction;
 
-        // Modifica richiesta
+        let statusHtml = ''; // ✅ Aggiunta per evitare errori
+
         const messageSid = m.sid || (m.params && m.params.sid);
         let latest = null;
 
@@ -331,7 +332,6 @@
         }
 
         div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)} ${statusHtml}</div>`;
-
         box.appendChild(div);
       });
 
