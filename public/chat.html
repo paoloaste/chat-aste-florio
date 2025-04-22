@@ -197,8 +197,14 @@
     const dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app';
 
     async function loadAll() {
-      const messages = await fetch(dbUrl + '/messages.json').then(r => r.json()) || {};
-      const status = await fetch(dbUrl + '/readStatus.json').then(r => r.json()) || {};
+      const user = firebase.auth().currentUser;
+      const token = await user.getIdToken();
+
+      const messages = await fetch(`${dbUrl}/messages.json?auth=${token}`).then(r => r.json()) || {};
+      const status = await fetch(`${dbUrl}/readStatus.json?auth=${token}`).then(r => r.json()) || {};
+
+      console.log("✅ Dati letti:", messages, status);
+
       grouped = {}; unread = {}; readStatus = status;
 
       for (let id in messages) {
