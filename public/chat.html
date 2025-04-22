@@ -285,7 +285,7 @@
         const div = document.createElement('div');
         div.className = 'message ' + m.direction;
 
-        let statusHtml = ''; // ✅ Aggiunta per evitare errori
+        let statusHtml = ''; // ✅ Spostato qui dentro per ogni messaggio
 
         const messageSid = m.sid || (m.params && m.params.sid);
         let latest = null;
