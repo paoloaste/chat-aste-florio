@@ -10,9 +10,6 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 
   <script>
-    let allStatuses = {}; // Variabile globale per gli statuses
-    let errorResolved = JSON.parse(localStorage.getItem("errorResolved") || "{}");
-
     const firebaseConfig = {
       apiKey: "AIzaSyAtsIoHSxlRXRLRPulOiqIJtuxOWIbZGag",
       authDomain: "aste-florio.firebaseapp.com",
@@ -178,16 +175,6 @@
         document.querySelector('.sidebar').style.display = 'block';
         document.querySelector('.chat-window').style.display = 'flex';
         loadAll();
-
-        // 🔄 Aggiorna tutto ogni 10 secondi
-        setInterval(async () => {
-          await loadStatuses(); // 🔄 ricarica status globali
-          renderSidebar();      // 🔁 aggiorna tutta la lista
-          if (selected) {
-            const activeLi = document.querySelector('.chat-list li.active');
-            if (activeLi) loadChat(selected, activeLi); // ricarica la conversazione aperta
-          }
-        }, 10000);
       } else {
         document.getElementById('loginBox').style.display = 'flex';
         document.querySelector('.sidebar').style.display = 'none';
@@ -239,6 +226,28 @@
       renderSidebar();
     }
 
+    function renderSidebar() {
+      const ul = document.getElementById('chatList');
+      ul.innerHTML = '';
+      Object.keys(grouped).sort((a, b) => {
+        const aT = grouped[a].at(-1).timestamp;
+        const bT = grouped[b].at(-1).timestamp;
+        return bT - aT;
+      }).forEach(num => {
+        const li = document.createElement('li');
+        li.innerHTML = `
+      <span>${num}</span>
+      ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
+      <button onclick="deleteChat('${num}')" style="background:none;border:none;color:red;font-size:16px;cursor:pointer;">✖️</button>
+    `;
+
+    li.onclick = (e) => {
+      if (e.target.tagName !== 'BUTTON') loadChat(num, li);
+    };
+        ul.appendChild(li);
+      });
+    }
+
     function formatDate(ts) {
       return new Date(ts).toLocaleDateString('it-IT');
     }
@@ -282,7 +291,10 @@
           lastDate = d;
         }
 
-        let statusHtml = ''; // ✅ Aggiunto qui
+        const div = document.createElement('div');
+        div.className = 'message ' + m.direction;
+
+        // Modifica richiesta
         const messageSid = m.sid || (m.params && m.params.sid);
         let latest = null;
 
@@ -307,9 +319,6 @@
           }
         }
 
-        const div = document.createElement('div');
-        div.className = 'message ' + m.direction;
-
         let html = '';
         if (m.body) {
           html += m.body.replace(/\\n/g, "<br>") + '<br>';
@@ -331,6 +340,7 @@
         }
 
         div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)} ${statusHtml}</div>`;
+
         box.appendChild(div);
       });
 
@@ -368,8 +378,9 @@
     async function loadStatuses() {
       const user = firebase.auth().currentUser; // Ottieni l'utente autenticato
       const token = await user.getIdToken(); // Recupera il token di autenticazione
+
       const res = await fetch(`${dbUrl}/logs/status.json?auth=${token}`); // Aggiungi il token alla query string
-      allStatuses = await res.json() || {}; // Aggiorna la variabile globale
+      return await res.json() || {}; // Restituisci i dati o un oggetto vuoto
     }
 
     // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
@@ -390,55 +401,6 @@
           alert('Errore durante la cancellazione della chat');
         }
       });
-    }
-
-    function renderSidebar() {
-      const errorChats = {};
-
-      for (let key in allStatuses) {
-        const s = allStatuses[key];
-        if ((s.status === 'failed' || s.status === 'undelivered') && s.to) {
-          const num = s.to.replace("whatsapp:", "").replace("+", "");
-          if (!errorResolved[num]) {
-            errorChats[num] = true;
-          }
-        }
-      }
-
-      const ul = document.getElementById('chatList');
-      ul.innerHTML = '';
-
-      Object.keys(grouped).sort((a, b) => {
-        const errA = errorChats[a] ? 1 : 0;
-        const errB = errorChats[b] ? 1 : 0;
-        if (errA !== errB) return errB - errA;
-
-        const aT = grouped[a].at(-1).timestamp;
-        const bT = grouped[b].at(-1).timestamp;
-        return bT - aT;
-      }).forEach(num => {
-        const li = document.createElement('li');
-        li.innerHTML = `
-          <span>${num}</span>
-          ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
-          ${errorChats[num] ? `<span class="badge" style="background:#e53935; cursor:pointer;" onclick="risolviErrore('${num}')">❌</span>` : ''}
-          <button onclick="deleteChat('${num}')" style="background:none;border:none;color:red;font-size:16px;cursor:pointer;">✖️</button>
-        `;
-
-        li.onclick = (e) => {
-          if (e.target.tagName !== 'BUTTON') loadChat(num, li);
-        };
-
-        ul.appendChild(li);
-      });
-    }
-
-    function risolviErrore(num) {
-      if (confirm(`Vuoi segnare l'errore su ${num} come risolto?`)) {
-        errorResolved[num] = true;
-        localStorage.setItem("errorResolved", JSON.stringify(errorResolved));
-        renderSidebar(); // aggiorna subito la sidebar
-      }
     }
   </script>
 </body>
