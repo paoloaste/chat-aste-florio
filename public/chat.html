@@ -199,7 +199,7 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
-function loadChat(number, li) {
+async function loadChat(number, li) {
   selected = number;
   document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
   li.classList.add('active');
@@ -218,6 +218,10 @@ function loadChat(number, li) {
   const box = document.getElementById('chatMessages');
   box.innerHTML = '';
   const sorted = grouped[number].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Aggiungi il caricamento degli status
+  const statuses = await loadStatuses();
+
   let lastDate = '';
 
   sorted.forEach(m => {
@@ -231,29 +235,43 @@ function loadChat(number, li) {
     }
 
     const div = document.createElement('div');
-div.className = 'message ' + m.direction;
+    div.className = 'message ' + m.direction;
 
-let html = '';
-if (m.body) {
-  html += m.body.replace(/\\n/g, "<br>") + '<br>';
-} else if (m.text) {
-  html += m.text + '<br>';
-} else if (m.params && Array.isArray(m.params)) {
-  html += `[${m.template}] ` + m.params.join(" / ") + "<br>";
-}
-
-if (m.media && Array.isArray(m.media)) {
-  m.media.forEach(media => {
-    if (media.type.startsWith('image/')) {
-      html += `<img src="${media.url}" style="max-width: 200px; border-radius: 8px; margin-top: 5px;"><br>`;
-    } else {
-      const fileName = media.url.split('/').pop().split('?')[0];
-      html += `<a href="${media.url}" target="_blank">📎 ${fileName}</a><br>`;
+    // Aggiungi il blocco per lo stato del messaggio
+    let statusHtml = '';
+    if (m.direction === 'outbound' && m.sid && statuses) {
+      for (let key in statuses) {
+        if (statuses[key].sid === m.sid) {
+          const s = statuses[key];
+          if (s.status === 'delivered') statusHtml = '✅ delivered';
+          else if (s.status === 'failed') statusHtml = '❌ failed';
+          else statusHtml = '⏳ ' + s.status;
+          break;
+        }
+      }
     }
-  });
-}
 
-div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)}</div>`;
+    let html = '';
+    if (m.body) {
+      html += m.body.replace(/\\n/g, "<br>") + '<br>';
+    } else if (m.text) {
+      html += m.text + '<br>';
+    } else if (m.params && Array.isArray(m.params)) {
+      html += `[${m.template}] ` + m.params.join(" / ") + "<br>";
+    }
+
+    if (m.media && Array.isArray(m.media)) {
+      m.media.forEach(media => {
+        if (media.type.startsWith('image/')) {
+          html += `<img src="${media.url}" style="max-width: 200px; border-radius: 8px; margin-top: 5px;"><br>`;
+        } else {
+          const fileName = media.url.split('/').pop().split('?')[0];
+          html += `<a href="${media.url}" target="_blank">📎 ${fileName}</a><br>`;
+        }
+      });
+    }
+
+    div.innerHTML = html + `<div class="timestamp">${formatTime(m.timestamp)} ${statusHtml}</div>`;
 
     box.appendChild(div);
   });
@@ -288,7 +306,14 @@ function sendMessage() {
   });
 }
 
+// 🔄 Carica gli status da Firebase
+async function loadStatuses() {
+  const res = await fetch('https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app/logs/status.json');
+  return await res.json() || {};
+}
+
 loadAll();
+
   function deleteChat(number) {
   if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
 
