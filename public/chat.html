@@ -797,6 +797,10 @@
             if (media.type && media.type.startsWith('image/')) {
               const img = document.createElement('img');
               img.src = media.url;
+              img.alt = '[immagine]';
+              img.onerror = () => {
+                img.remove();
+              };
               mediaContainer.appendChild(img);
             } else {
               const a = document.createElement('a');
@@ -807,7 +811,9 @@
               mediaContainer.appendChild(a);
             }
           });
-          div.appendChild(mediaContainer);
+          if (mediaContainer.childNodes.length) {
+            div.appendChild(mediaContainer);
+          }
         }
 
         const tsDiv = document.createElement('div');
