@@ -112,7 +112,7 @@ app.post('/webhook', async (req, res) => {
   const msgRef = db.ref('conversationMessages').child(conversationId).push();
   await msgRef.set({
     text: body || (media.length ? '[media]' : ''),
-    direction: 'in',
+    direction: 'inbound',
     timestamp,
     media
   });
@@ -173,7 +173,7 @@ app.post('/send', async (req, res) => {
     const msgRef = db.ref('conversationMessages').child(conversationId).push();
     await msgRef.set({
       text: body,
-      direction: 'out',
+      direction: 'outbound',
       timestamp,
       sid: twilioMessage.sid
     });
