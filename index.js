@@ -24,6 +24,9 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
+// Disabilita header inutili per un micro-backend più "snello"
+app.disable('x-powered-by');
+
 // Webhook Twilio
 app.post('/webhook', async (req, res) => {
   const from = req.body.From || req.body.from || req.body.Author;
