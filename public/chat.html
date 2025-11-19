@@ -623,31 +623,24 @@
       const user = firebase.auth().currentUser;
       const token = await user.getIdToken();
 
-      const [messages, status] = await Promise.all([
-        fetch(`${dbUrl}/messages.json?auth=${token}`).then(r => r.json()),
+      const [summary, status] = await Promise.all([
+        fetch(`${dbUrl}/chatSummary.json?auth=${token}`).then(r => r.json()),
         fetch(`${dbUrl}/readStatus.json?auth=${token}`).then(r => r.json())
       ]);
 
-      console.log("✅ Dati letti:", messages, status);
+      console.log("✅ Riepilogo chat letto:", summary, status);
 
       grouped = {}; unread = {}; lastMessageByChat = {}; readStatus = status || {};
 
-      for (let id in messages) {
-        const m = messages[id];
-        const isInbound = m.direction === 'inbound' || m.from === 'cliente';
-        const phone = isInbound
-          ? (m.from || '').replace('whatsapp:', '')
-          : (m.to || '').replace('whatsapp:', '');
-        if (!grouped[phone]) grouped[phone] = [];
-        const msgWithId = { ...m, id };
-        grouped[phone].push(msgWithId);
-        lastMessageByChat[phone] = msgWithId;
-        m.direction = m.direction || (m.from === "azienda" ? "outbound" : "inbound");
-      }
-
-      for (let phone in grouped) {
-        const lastRead = readStatus[phone] || 0;
-        unread[phone] = grouped[phone].filter(m => m.direction === 'inbound' && m.timestamp > lastRead).length;
+      if (summary) {
+        Object.keys(summary).forEach(phone => {
+          const info = summary[phone] || {};
+          lastMessageByChat[phone] = {
+            body: info.lastMessage || '',
+            timestamp: info.lastTimestamp || 0
+          };
+          unread[phone] = info.unread || 0;
+        });
       }
 
       renderSidebar();
