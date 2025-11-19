@@ -512,10 +512,11 @@
   </style>
 </head>
 <body>
-  <div id="loginBox" style="margin:auto; padding:20px; display:flex; flex-direction:column; width:300px; gap:10px;">
+  <div id="loginBox" style="margin:auto; padding:20px; display:flex; flex-direction:column; width:320px; gap:10px;">
     <h2>Login Aste Florio</h2>
     <input type="email" id="email" placeholder="Email" style="padding:8px;">
     <input type="password" id="password" placeholder="Password" style="padding:8px;">
+    <div id="loginError" style="display:none; font-size:12px; color:#ff6b6b;"></div>
     <button onclick="login()" style="padding:8px;">Accedi</button>
   </div>
 
@@ -596,8 +597,27 @@
     function login() {
       const email = document.getElementById('email').value.trim();
       const pass = document.getElementById('password').value.trim();
+      const errorBox = document.getElementById('loginError');
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+
+      if (!email || !pass) {
+        errorBox.textContent = 'Inserisci email e password.';
+        errorBox.style.display = 'block';
+        return;
+      }
+
       firebase.auth().signInWithEmailAndPassword(email, pass)
-        .catch(err => alert("Errore login: " + err.message));
+        .catch(err => {
+          console.error('Errore login Firebase:', err);
+          let msg = 'Login non riuscito. Controlla le credenziali.';
+          if (err.code === 'auth/invalid-email') msg = 'Email non valida.';
+          else if (err.code === 'auth/user-not-found') msg = 'Utente non trovato.';
+          else if (err.code === 'auth/wrong-password') msg = 'Password errata.';
+          else if (err.code === 'auth/network-request-failed') msg = 'Problema di rete. Riprova.';
+          errorBox.textContent = msg;
+          errorBox.style.display = 'block';
+        });
     }
 
     function logout() {
