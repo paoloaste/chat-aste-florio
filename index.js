@@ -67,7 +67,14 @@ async function updateConversationSummary(conversationId, { phone, text, timestam
   });
 }
 
-const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+const hasTwilioCredentials =
+  process.env.TWILIO_SID &&
+  process.env.TWILIO_AUTH &&
+  String(process.env.TWILIO_SID).startsWith('AC');
+
+const client = hasTwilioCredentials
+  ? twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH)
+  : null;
 
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -159,23 +166,34 @@ app.post('/status', async (req, res) => {
 // Invia risposta
 app.post('/send', async (req, res) => {
   const { to, body, conversationId: clientConversationId } = req.body;
-  try {
-    const twilioMessage = await client.messages.create({
-      from: `whatsapp:${process.env.TWILIO_NUMBER}`,
-      to: `whatsapp:${to}`,
-      body
-    });
 
+  try {
     const timestamp = Date.now();
     const phoneKey = normalizePhone(to);
     const conversationId = clientConversationId || await getOrCreateConversationId(phoneKey);
+
+    let sid = null;
+
+    if (client && hasTwilioCredentials) {
+      // Produzione: invio reale tramite Twilio
+      const twilioMessage = await client.messages.create({
+        from: `whatsapp:${process.env.TWILIO_NUMBER}`,
+        to: `whatsapp:${to}`,
+        body
+      });
+      sid = twilioMessage.sid;
+    } else {
+      // Sviluppo / locale: niente Twilio, ma scriviamo comunque su Firebase
+      sid = `local-${Date.now()}`;
+      console.log('⚠️ Twilio non configurato: salvo solo su Firebase', { to, body });
+    }
 
     const msgRef = db.ref('conversationMessages').child(conversationId).push();
     await msgRef.set({
       text: body,
       direction: 'outbound',
       timestamp,
-      sid: twilioMessage.sid
+      sid
     });
 
     await updateConversationSummary(conversationId, {
@@ -187,6 +205,7 @@ app.post('/send', async (req, res) => {
 
     res.sendStatus(200);
   } catch (e) {
+    console.error('❌ Errore /send:', e);
     res.status(500).send('Errore invio');
   }
 });
