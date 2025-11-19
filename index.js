@@ -17,12 +17,54 @@ admin.initializeApp({
 });
 const db = admin.database();
 
-// Normalizza il numero togliendo l'eventuale prefisso whatsapp:
+// Normalizza il numero in forma +39... togliendo l'eventuale prefisso whatsapp:
 function normalizePhone(raw) {
   if (!raw) return '';
   let p = String(raw).trim();
   if (p.startsWith('whatsapp:')) p = p.replace('whatsapp:', '');
   return p;
+}
+
+// Trova o crea una conversazione dato un phoneKey (+39...)
+async function getOrCreateConversationId(phoneKey) {
+  if (!phoneKey) return null;
+
+  const byPhoneRef = db.ref('conversationsByPhone').child(phoneKey);
+  const snap = await byPhoneRef.once('value');
+  if (snap.exists()) {
+    return snap.val();
+  }
+
+  const convRef = db.ref('conversationSummaries').push();
+  const conversationId = convRef.key;
+  const now = Date.now();
+
+  await convRef.set({
+    phone: phoneKey,
+    lastMessageText: '',
+    lastMessageAt: now,
+    unreadCount: 0
+  });
+
+  await byPhoneRef.set(conversationId);
+  return conversationId;
+}
+
+// Aggiorna il riepilogo di una conversazione
+async function updateConversationSummary(conversationId, { phone, text, timestamp, incrementUnread }) {
+  if (!conversationId || !timestamp) return;
+  const summaryRef = db.ref('conversationSummaries').child(conversationId);
+
+  await summaryRef.transaction(current => {
+    const curr = current || {};
+    const unread = (curr.unreadCount || 0) + (incrementUnread ? 1 : 0);
+    return {
+      phone: phone || curr.phone || '',
+      lastMessageText: text || curr.lastMessageText || '',
+      lastMessageAt: timestamp,
+      unreadCount: unread
+    };
+  });
 }
 
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
@@ -65,14 +107,21 @@ app.post('/webhook', async (req, res) => {
 
   const phoneKey = normalizePhone(from);
 
-  const msgRef = db.ref('messages').push();
+  const conversationId = await getOrCreateConversationId(phoneKey);
+
+  const msgRef = db.ref('conversationMessages').child(conversationId).push();
   await msgRef.set({
-    body: body || (media.length ? '[media]' : ''),
-    direction: 'inbound',
-    from: from,
-    to: to,
+    text: body || (media.length ? '[media]' : ''),
+    direction: 'in',
     timestamp,
     media
+  });
+
+  await updateConversationSummary(conversationId, {
+    phone: phoneKey,
+    text: body || (media.length ? '[media]' : ''),
+    timestamp,
+    incrementUnread: true
   });
 
   res.sendStatus(200);
@@ -109,7 +158,7 @@ app.post('/status', async (req, res) => {
 
 // Invia risposta
 app.post('/send', async (req, res) => {
-  const { to, body } = req.body;
+  const { to, body, conversationId: clientConversationId } = req.body;
   try {
     const twilioMessage = await client.messages.create({
       from: `whatsapp:${process.env.TWILIO_NUMBER}`,
@@ -118,15 +167,22 @@ app.post('/send', async (req, res) => {
     });
 
     const timestamp = Date.now();
+    const phoneKey = normalizePhone(to);
+    const conversationId = clientConversationId || await getOrCreateConversationId(phoneKey);
 
-    const msgRef = db.ref('messages').push();
+    const msgRef = db.ref('conversationMessages').child(conversationId).push();
     await msgRef.set({
-      body,
-      direction: 'outbound',
-      from: 'azienda',
-      to: `whatsapp:${to}`,
+      text: body,
+      direction: 'out',
       timestamp,
       sid: twilioMessage.sid
+    });
+
+    await updateConversationSummary(conversationId, {
+      phone: phoneKey,
+      text: body,
+      timestamp,
+      incrementUnread: false
     });
 
     res.sendStatus(200);
@@ -135,32 +191,13 @@ app.post('/send', async (req, res) => {
   }
 });
 
-// Ritorna l'elenco delle ultime conversazioni (ultimo messaggio per numero)
+// Ritorna l'elenco delle conversazioni (riepilogo)
 app.get('/conversations', async (req, res) => {
   try {
-    const snap = await db.ref('messages').orderByChild('timestamp').limitToLast(500).once('value');
-    const conversationsMap = {};
-
-    snap.forEach(child => {
-      const m = child.val();
-      const phoneRaw = m.direction === 'inbound' ? m.from : m.to;
-      const phoneKey = normalizePhone(phoneRaw);
-      if (!phoneKey) return;
-
-      if (!conversationsMap[phoneKey] || m.timestamp > conversationsMap[phoneKey].lastMessageAt) {
-        conversationsMap[phoneKey] = {
-          phone: phoneKey,
-          lastMessageText: m.body || '[media]',
-          lastMessageAt: m.timestamp,
-          lastDirection: m.direction
-        };
-      }
-    });
-
-    const list = Object.values(conversationsMap)
-      .sort((a, b) => b.lastMessageAt - a.lastMessageAt)
-      .slice(0, 50);
-
+    const snap = await db.ref('conversationSummaries').orderByChild('lastMessageAt').limitToLast(200).once('value');
+    const data = snap.val() || {};
+    const list = Object.keys(data).map(id => ({ id, ...data[id] }))
+      .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
     res.json(list);
   } catch (err) {
     console.error('Errore /conversations:', err);
@@ -168,28 +205,19 @@ app.get('/conversations', async (req, res) => {
   }
 });
 
-// Ritorna tutti i messaggi di una singola chat (per numero normalizzato)
-app.get('/messages-by-number', async (req, res) => {
-  const phone = req.query.phone;
-  if (!phone) return res.sendStatus(400);
+// Ritorna tutti i messaggi di una singola conversazione
+app.get('/conversation-messages', async (req, res) => {
+  const conversationId = req.query.id;
+  if (!conversationId) return res.sendStatus(400);
 
-  const phoneKey = normalizePhone(phone);
   try {
-    const snap = await db.ref('messages').orderByChild('timestamp').once('value');
-    const messages = [];
-    snap.forEach(child => {
-      const m = child.val();
-      const phoneRaw = m.direction === 'inbound' ? m.from : m.to;
-      const p = normalizePhone(phoneRaw);
-      if (p === phoneKey) {
-        messages.push({ id: child.key, ...m });
-      }
-    });
-
-    messages.sort((a, b) => a.timestamp - b.timestamp);
-    res.json(messages);
+    const snap = await db.ref('conversationMessages').child(conversationId).once('value');
+    const data = snap.val() || {};
+    const list = Object.keys(data).map(id => ({ id, ...data[id] }))
+      .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    res.json(list);
   } catch (err) {
-    console.error('Errore /messages-by-number:', err);
+    console.error('Errore /conversation-messages:', err);
     res.status(500).send('Errore lettura messaggi');
   }
 });
@@ -206,26 +234,28 @@ app.get('/logs/status', async (req, res) => {
 });
 
 // Cancella tutti i messaggi di una chat per numero
+app.post('/read', async (req, res) => {
+  const { conversationId } = req.body;
+  if (!conversationId) return res.sendStatus(400);
+
+  await db.ref('conversationSummaries').child(conversationId).child('unreadCount').set(0);
+  res.sendStatus(200);
+});
+
 app.post('/delete-chat', async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.sendStatus(400);
+  const { conversationId } = req.body;
+  if (!conversationId) return res.sendStatus(400);
 
-  const phoneKey = normalizePhone(phone);
   try {
-    const snap = await db.ref('messages').orderByChild('timestamp').once('value');
-    const updates = {};
-    snap.forEach(child => {
-      const m = child.val();
-      const phoneRaw = m.direction === 'inbound' ? m.from : m.to;
-      const p = normalizePhone(phoneRaw);
-      if (p === phoneKey) {
-        updates[child.key] = null;
-      }
-    });
+    const summarySnap = await db.ref('conversationSummaries').child(conversationId).once('value');
+    const summary = summarySnap.val();
 
-    if (Object.keys(updates).length) {
-      await db.ref('messages').update(updates);
+    if (summary && summary.phone) {
+      await db.ref('conversationsByPhone').child(summary.phone).remove();
     }
+
+    await db.ref('conversationMessages').child(conversationId).remove();
+    await db.ref('conversationSummaries').child(conversationId).remove();
 
     res.sendStatus(200);
   } catch (err) {
