@@ -616,28 +616,24 @@
       firebase.auth().signOut();
     }
 
-    // conversations: { conversationId: { phone, lastMessageText, lastMessageAt, unreadCount } }
-    // messagesByConv: { conversationId: [ { text, direction, timestamp, ... } ] }
-    let conversations = {}, messagesByConv = {}, selectedConv = null;
+    // conversations: { phone: { phone, lastMessageText, lastMessageAt, lastDirection } }
+    // messagesByPhone: { phone: [ { body, direction, timestamp, ... } ] }
+    let conversations = {}, messagesByPhone = {}, selectedPhone = null;
     let conversationsPageSize = 50; // mostriamo 50 conversazioni alla volta
-    const dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app';
 
     async function loadAll() {
-      const user = firebase.auth().currentUser;
-      const token = await user.getIdToken();
-
-      const summary = await fetch(`${dbUrl}/conversationSummaries.json?auth=${token}`).then(r => r.json());
-
-      console.log("✅ Riepilogo conversazioni letto:", summary);
+      const res = await fetch('/conversations');
+      const list = await res.json();
 
       conversations = {};
-      if (summary) {
-        Object.keys(summary).forEach(id => {
-          conversations[id] = summary[id] || {};
+      if (Array.isArray(list)) {
+        list.forEach(conv => {
+          if (conv && conv.phone) {
+            conversations[conv.phone] = conv;
+          }
         });
       }
 
-      // reset paginazione ad ogni ricarica
       conversationsPageSize = 50;
       renderSidebar();
     }
@@ -645,26 +641,21 @@
     function renderSidebar() {
       const ul = document.getElementById('chatList');
       ul.innerHTML = '';
-      const ids = Object.keys(conversations || {});
-      // Prima non letti, poi letti, entrambi ordinati per lastMessageAt desc
-      ids.sort((a, b) => {
+      const phones = Object.keys(conversations || {});
+
+      phones.sort((a, b) => {
         const aConv = conversations[a] || {};
         const bConv = conversations[b] || {};
-        const aUnread = aConv.unreadCount || 0;
-        const bUnread = bConv.unreadCount || 0;
-        if ((aUnread > 0) !== (bUnread > 0)) {
-          return bUnread - aUnread; // non letti prima
-        }
         const aT = aConv.lastMessageAt || 0;
         const bT = bConv.lastMessageAt || 0;
         return bT - aT;
       });
 
-      const limitedIds = ids.slice(0, conversationsPageSize);
+      const limitedPhones = phones.slice(0, conversationsPageSize);
 
-      limitedIds.forEach(id => {
-        const conv = conversations[id] || {};
-        const num = conv.phone || id;
+      limitedPhones.forEach(phone => {
+        const conv = conversations[phone] || {};
+        const num = conv.phone || phone;
         const lastMsgText = conv.lastMessageText || '';
         const timestamp = conv.lastMessageAt || 0;
         const li = document.createElement('li');
@@ -682,8 +673,7 @@
             <div class="chat-preview-row">
               <span class="chat-preview">${previewText}</span>
               <div class="chat-actions">
-                ${conv.unreadCount ? `<span class="badge">${conv.unreadCount}</span>` : ''}
-                <button class="chat-delete-btn" onclick="deleteChat('${id}')">✕</button>
+                <button class="chat-delete-btn" onclick="deleteChat('${num}')">✕</button>
               </div>
             </div>
           </div>
@@ -691,7 +681,7 @@
 
         li.onclick = (e) => {
           if (!(e.target && (e.target.classList.contains('chat-delete-btn')))) {
-            loadChat(id, li);
+            loadChat(num, li);
           }
         };
         ul.appendChild(li);
@@ -706,8 +696,8 @@
       return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
     }
 
-    async function loadChat(conversationId, li) {
-      selectedConv = conversationId;
+    async function loadChat(phone, li) {
+      selectedPhone = phone;
       document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
       li.classList.add('active');
 
@@ -715,20 +705,12 @@
       const headerName = document.getElementById('chatHeaderName');
       const headerStatus = document.getElementById('chatHeaderStatus');
 
-      const conv = conversations[conversationId] || {};
-      const number = conv.phone || conversationId;
+      const conv = conversations[phone] || {};
+      const number = conv.phone || phone;
 
       avatar.textContent = number.replace('whatsapp:', '').slice(-2).toUpperCase();
       headerName.textContent = number;
       headerStatus.textContent = 'Online';
-
-      // aggiorna stato lettura
-      fetch('/read', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId })
-      });
-      li.querySelector('.badge')?.remove();
 
       const box = document.getElementById('chatMessages');
       box.innerHTML = '';
@@ -737,30 +719,24 @@
         placeholder.style.display = 'none';
       }
 
-      const user = firebase.auth().currentUser;
-      const token = await user.getIdToken();
-
-      if (!messagesByConv[conversationId]) {
-        const data = await fetch(`${dbUrl}/conversationMessages/${conversationId}.json?auth=${token}`).then(r => r.json());
+      if (!messagesByPhone[number]) {
+        const data = await fetch(`/messages-by-number?phone=${encodeURIComponent(number)}`).then(r => r.json());
         const arr = [];
-        if (data) {
-          Object.keys(data).forEach(k => {
-            const msg = data[k];
-            // Compatibilità con vecchio schema (messages): body/text/direction
-            if (!msg.text && msg.body) msg.text = msg.body;
-            if (!msg.direction && msg.from && msg.to) {
-              // se arriva dal vecchio nodo potremmo aver salvato direction
-              msg.direction = msg.direction || (msg.from === 'me' ? 'out' : 'in');
+        if (Array.isArray(data)) {
+          data.forEach(msg => {
+            const m = Object.assign({}, msg);
+            if (!m.text && m.body) m.text = m.body;
+            if (!m.direction && m.from && m.to) {
+              m.direction = m.from === 'azienda' ? 'outbound' : 'inbound';
             }
-            arr.push(msg);
+            arr.push(m);
           });
         }
         arr.sort((a, b) => a.timestamp - b.timestamp);
-        // opzionale: tieni solo gli ultimi 200
-        messagesByConv[conversationId] = arr.slice(-200);
+        messagesByPhone[number] = arr.slice(-500);
       }
 
-      const sorted = messagesByConv[conversationId];
+      const sorted = messagesByPhone[number];
 
       // Aggiungi il caricamento degli status
       const statuses = await loadStatuses();
@@ -860,34 +836,30 @@
     function sendMessage() {
       const input = document.getElementById('msgInput');
       const body = input.value.trim();
-      const fileInput = document.getElementById('fileInput');
-      const hasFiles = fileInput && fileInput.files && fileInput.files.length > 0;
-      if (!selectedConv || (!body && !hasFiles)) return;
+      if (!selectedPhone || !body) return;
 
-      const conv = conversations[selectedConv] || {};
-      const number = (conv.phone || '').replace('whatsapp:', '');
+      const number = selectedPhone.replace('whatsapp:', '');
       if (!number) return;
       fetch('/send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ to: number, body, conversationId: selectedConv })
+        body: JSON.stringify({ to: number, body })
       }).then(res => {
         if (res.ok) {
           input.value = '';
-          if (fileInput) fileInput.value = '';
           const msg = {
-            text: body,
-            direction: 'out',
+            body: body,
+            direction: 'outbound',
             timestamp: Date.now()
           };
-          if (!messagesByConv[selectedConv]) messagesByConv[selectedConv] = [];
-          messagesByConv[selectedConv].push(msg);
-          // aggiorna anche il summary locale per la sidebar
-          if (!conversations[selectedConv]) conversations[selectedConv] = {};
-          conversations[selectedConv].lastMessageText = body;
-          conversations[selectedConv].lastMessageAt = msg.timestamp;
+          if (!messagesByPhone[selectedPhone]) messagesByPhone[selectedPhone] = [];
+          messagesByPhone[selectedPhone].push(msg);
+          if (!conversations[selectedPhone]) conversations[selectedPhone] = { phone: selectedPhone };
+          conversations[selectedPhone].lastMessageText = body;
+          conversations[selectedPhone].lastMessageAt = msg.timestamp;
           renderSidebar();
-          loadChat(selectedConv, document.querySelector('.chat-list li.active'));
+          const activeLi = document.querySelector('.chat-list li.active') || document.querySelector('.chat-list li');
+          if (activeLi) loadChat(selectedPhone, activeLi);
         }
       });
     }
@@ -925,23 +897,19 @@
 
     // 🔄 Carica gli status da Firebase
     async function loadStatuses() {
-      const user = firebase.auth().currentUser;
-      if (!user) return {};
-      const token = await user.getIdToken();
-
-      const res = await fetch(`${dbUrl}/logs/status.json?auth=${token}`);
+      const res = await fetch('/logs/status');
       return await res.json() || {};
     }
 
     // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
-    function deleteChat(conversationId) {
+    function deleteChat(phone) {
       if (!confirm(`Sei sicuro di voler cancellare questa conversazione?`)) return;
 
       fetch('/delete-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId })
+        body: JSON.stringify({ phone })
       })
       .then(res => {
         if (res.ok) {
