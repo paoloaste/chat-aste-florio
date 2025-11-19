@@ -726,7 +726,10 @@
 
       const box = document.getElementById('chatMessages');
       box.innerHTML = '';
-      document.getElementById('chatPlaceholder').style.display = 'none';
+      const placeholder = document.getElementById('chatPlaceholder');
+      if (placeholder) {
+        placeholder.style.display = 'none';
+      }
       const sorted = grouped[number].sort((a, b) => a.timestamp - b.timestamp);
 
       // Aggiungi il caricamento degli status
