@@ -269,7 +269,7 @@
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: url('https://i.imgur.com/tDY6WZJ.png') repeat;
+      background: #0a1014;
       position: relative;
     }
 
@@ -323,10 +323,7 @@
       padding: 12px 40px;
       display: flex;
       flex-direction: column;
-      background: radial-gradient(circle at top left, rgba(0,0,0,0.3), transparent 55%),
-                  radial-gradient(circle at bottom right, rgba(0,0,0,0.6), transparent 55%),
-                  url('https://i.imgur.com/tDY6WZJ.png') repeat;
-      background-size: auto;
+      background: #0a1014;
     }
 
     .date-divider {
@@ -781,40 +778,26 @@
 
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
+        let textContent = '';
         if (m.body) {
-          textDiv.innerHTML = m.body.replace(/\n/g, "<br>");
+          textContent = m.body;
         } else if (m.text) {
-          textDiv.textContent = m.text;
+          textContent = m.text;
         } else if (m.params && Array.isArray(m.params)) {
-          textDiv.textContent = `[${m.template}] ` + m.params.join(" / ");
+          textContent = `[${m.template}] ` + m.params.join(" / ");
         }
-        div.appendChild(textDiv);
 
-        if (m.media && Array.isArray(m.media)) {
-          const mediaContainer = document.createElement('div');
-          mediaContainer.className = 'message-media';
-          m.media.forEach(media => {
-            if (media.type && media.type.startsWith('image/')) {
-              const img = document.createElement('img');
-              img.src = media.url;
-              img.alt = '[immagine]';
-              img.onerror = () => {
-                img.remove();
-              };
-              mediaContainer.appendChild(img);
-            } else {
-              const a = document.createElement('a');
-              const fileName = media.url.split('/').pop().split('?')[0];
-              a.href = media.url;
-              a.target = '_blank';
-              a.textContent = `📎 ${fileName}`;
-              mediaContainer.appendChild(a);
-            }
-          });
-          if (mediaContainer.childNodes.length) {
-            div.appendChild(mediaContainer);
+        // Mostra solo testo; se ci sono media aggiungi un tag testuale
+        if (m.media && Array.isArray(m.media) && m.media.length) {
+          if (textContent) {
+            textContent += '\n[media]';
+          } else {
+            textContent = '[media]';
           }
         }
+
+        textDiv.textContent = textContent;
+        div.appendChild(textDiv);
 
         const tsDiv = document.createElement('div');
         tsDiv.className = 'timestamp';
