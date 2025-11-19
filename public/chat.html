@@ -5,9 +5,9 @@
   <title>Chat Aste Florio (WhatsApp)</title>
 
   <!-- Firebase App (core) + Auth + Database -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js" defer></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js" defer></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 
   <style>
     :root {
@@ -570,18 +570,13 @@
   </div>
 
   <script>
-    // Carico Firebase solo quando lo script è pronto
-    window.addEventListener('load', () => {
-      const firebaseConfig = {
-        apiKey: "AIzaSyAtsIoHSxlRXRLRPulOiqIJtuxOWIbZGag",
-        authDomain: "aste-florio.firebaseapp.com",
-        databaseURL: "https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app",
-        projectId: "aste-florio",
-      };
-      if (!firebase.apps.length) {
-        firebase.initializeApp(firebaseConfig);
-      }
-    });
+    const firebaseConfig = {
+      apiKey: "AIzaSyAtsIoHSxlRXRLRPulOiqIJtuxOWIbZGag",
+      authDomain: "aste-florio.firebaseapp.com",
+      databaseURL: "https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "aste-florio",
+    };
+    firebase.initializeApp(firebaseConfig);
 
     firebase.auth().onAuthStateChanged(user => {
       if (user) {
