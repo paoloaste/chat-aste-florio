@@ -616,9 +616,9 @@
       firebase.auth().signOut();
     }
 
-    // conversations: { phone: { phone, lastMessageText, lastMessageAt, lastDirection } }
-    // messagesByPhone: { phone: [ { body, direction, timestamp, ... } ] }
-    let conversations = {}, messagesByPhone = {}, selectedPhone = null;
+    // conversations: { conversationId: { phone, lastMessageText, lastMessageAt, unreadCount } }
+    // messagesByConv: { conversationId: [ { text, direction, timestamp, ... } ] }
+    let conversations = {}, messagesByConv = {}, selectedConv = null;
     let conversationsPageSize = 50; // mostriamo 50 conversazioni alla volta
 
     async function loadAll() {
@@ -628,8 +628,8 @@
       conversations = {};
       if (Array.isArray(list)) {
         list.forEach(conv => {
-          if (conv && conv.phone) {
-            conversations[conv.phone] = conv;
+          if (conv && conv.id) {
+            conversations[conv.id] = conv;
           }
         });
       }
@@ -641,9 +641,9 @@
     function renderSidebar() {
       const ul = document.getElementById('chatList');
       ul.innerHTML = '';
-      const phones = Object.keys(conversations || {});
+      const ids = Object.keys(conversations || {});
 
-      phones.sort((a, b) => {
+      ids.sort((a, b) => {
         const aConv = conversations[a] || {};
         const bConv = conversations[b] || {};
         const aT = aConv.lastMessageAt || 0;
@@ -651,11 +651,11 @@
         return bT - aT;
       });
 
-      const limitedPhones = phones.slice(0, conversationsPageSize);
+      const limitedIds = ids.slice(0, conversationsPageSize);
 
-      limitedPhones.forEach(phone => {
-        const conv = conversations[phone] || {};
-        const num = conv.phone || phone;
+      limitedIds.forEach(id => {
+        const conv = conversations[id] || {};
+        const num = conv.phone || id;
         const lastMsgText = conv.lastMessageText || '';
         const timestamp = conv.lastMessageAt || 0;
         const li = document.createElement('li');
@@ -673,7 +673,8 @@
             <div class="chat-preview-row">
               <span class="chat-preview">${previewText}</span>
               <div class="chat-actions">
-                <button class="chat-delete-btn" onclick="deleteChat('${num}')">✕</button>
+                ${conv.unreadCount ? `<span class="badge">${conv.unreadCount}</span>` : ''}
+                <button class="chat-delete-btn" onclick="deleteChat('${id}')">✕</button>
               </div>
             </div>
           </div>
@@ -681,7 +682,7 @@
 
         li.onclick = (e) => {
           if (!(e.target && (e.target.classList.contains('chat-delete-btn')))) {
-            loadChat(num, li);
+            loadChat(id, li);
           }
         };
         ul.appendChild(li);
@@ -696,8 +697,8 @@
       return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
     }
 
-    async function loadChat(phone, li) {
-      selectedPhone = phone;
+    async function loadChat(conversationId, li) {
+      selectedConv = conversationId;
       document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
       li.classList.add('active');
 
@@ -705,12 +706,20 @@
       const headerName = document.getElementById('chatHeaderName');
       const headerStatus = document.getElementById('chatHeaderStatus');
 
-      const conv = conversations[phone] || {};
-      const number = conv.phone || phone;
+      const conv = conversations[conversationId] || {};
+      const number = conv.phone || conversationId;
 
       avatar.textContent = number.replace('whatsapp:', '').slice(-2).toUpperCase();
       headerName.textContent = number;
       headerStatus.textContent = 'Online';
+
+      // aggiorna stato lettura
+      fetch('/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId })
+      });
+      li.querySelector('.badge')?.remove();
 
       const box = document.getElementById('chatMessages');
       box.innerHTML = '';
@@ -719,24 +728,21 @@
         placeholder.style.display = 'none';
       }
 
-      if (!messagesByPhone[number]) {
-        const data = await fetch(`/messages-by-number?phone=${encodeURIComponent(number)}`).then(r => r.json());
+      if (!messagesByConv[conversationId]) {
+        const data = await fetch(`/conversation-messages?id=${encodeURIComponent(conversationId)}`).then(r => r.json());
         const arr = [];
         if (Array.isArray(data)) {
           data.forEach(msg => {
             const m = Object.assign({}, msg);
             if (!m.text && m.body) m.text = m.body;
-            if (!m.direction && m.from && m.to) {
-              m.direction = m.from === 'azienda' ? 'outbound' : 'inbound';
-            }
             arr.push(m);
           });
         }
         arr.sort((a, b) => a.timestamp - b.timestamp);
-        messagesByPhone[number] = arr.slice(-500);
+        messagesByConv[conversationId] = arr.slice(-500);
       }
 
-      const sorted = messagesByPhone[number];
+      const sorted = messagesByConv[conversationId];
 
       // Aggiungi il caricamento degli status
       const statuses = await loadStatuses();
@@ -836,30 +842,31 @@
     function sendMessage() {
       const input = document.getElementById('msgInput');
       const body = input.value.trim();
-      if (!selectedPhone || !body) return;
+      if (!selectedConv || !body) return;
 
-      const number = selectedPhone.replace('whatsapp:', '');
+      const conv = conversations[selectedConv] || {};
+      const number = (conv.phone || '').replace('whatsapp:', '');
       if (!number) return;
       fetch('/send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ to: number, body })
+        body: JSON.stringify({ to: number, body, conversationId: selectedConv })
       }).then(res => {
         if (res.ok) {
           input.value = '';
           const msg = {
-            body: body,
-            direction: 'outbound',
+            text: body,
+            direction: 'out',
             timestamp: Date.now()
           };
-          if (!messagesByPhone[selectedPhone]) messagesByPhone[selectedPhone] = [];
-          messagesByPhone[selectedPhone].push(msg);
-          if (!conversations[selectedPhone]) conversations[selectedPhone] = { phone: selectedPhone };
-          conversations[selectedPhone].lastMessageText = body;
-          conversations[selectedPhone].lastMessageAt = msg.timestamp;
+          if (!messagesByConv[selectedConv]) messagesByConv[selectedConv] = [];
+          messagesByConv[selectedConv].push(msg);
+          if (!conversations[selectedConv]) conversations[selectedConv] = {};
+          conversations[selectedConv].lastMessageText = body;
+          conversations[selectedConv].lastMessageAt = msg.timestamp;
           renderSidebar();
           const activeLi = document.querySelector('.chat-list li.active') || document.querySelector('.chat-list li');
-          if (activeLi) loadChat(selectedPhone, activeLi);
+          if (activeLi) loadChat(selectedConv, activeLi);
         }
       });
     }
@@ -903,13 +910,13 @@
 
     // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
-    function deleteChat(phone) {
+    function deleteChat(conversationId) {
       if (!confirm(`Sei sicuro di voler cancellare questa conversazione?`)) return;
 
       fetch('/delete-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone })
+        body: JSON.stringify({ conversationId })
       })
       .then(res => {
         if (res.ok) {
