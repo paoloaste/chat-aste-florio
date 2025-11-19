@@ -135,10 +135,6 @@ app.post('/send', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server online sulla porta ${port}`);
-});
-
 // Ritorna l'elenco delle ultime conversazioni (ultimo messaggio per numero)
 app.get('/conversations', async (req, res) => {
   try {
@@ -196,4 +192,48 @@ app.get('/messages-by-number', async (req, res) => {
     console.error('Errore /messages-by-number:', err);
     res.status(500).send('Errore lettura messaggi');
   }
+});
+
+// Espone i log di stato Twilio per la UI
+app.get('/logs/status', async (req, res) => {
+  try {
+    const snap = await db.ref('logs/status').limitToLast(1000).once('value');
+    res.json(snap.val() || {});
+  } catch (err) {
+    console.error('Errore /logs/status:', err);
+    res.status(500).send('Errore lettura status');
+  }
+});
+
+// Cancella tutti i messaggi di una chat per numero
+app.post('/delete-chat', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.sendStatus(400);
+
+  const phoneKey = normalizePhone(phone);
+  try {
+    const snap = await db.ref('messages').orderByChild('timestamp').once('value');
+    const updates = {};
+    snap.forEach(child => {
+      const m = child.val();
+      const phoneRaw = m.direction === 'inbound' ? m.from : m.to;
+      const p = normalizePhone(phoneRaw);
+      if (p === phoneKey) {
+        updates[child.key] = null;
+      }
+    });
+
+    if (Object.keys(updates).length) {
+      await db.ref('messages').update(updates);
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Errore /delete-chat:', err);
+    res.status(500).send('Errore cancellazione chat');
+  }
+});
+
+app.listen(port, () => {
+  console.log(`🚀 Server online sulla porta ${port}`);
 });
