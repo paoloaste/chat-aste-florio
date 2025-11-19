@@ -17,6 +17,27 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+// Aggiorna il nodo di riepilogo per una chat specifica
+async function updateChatSummary({ phone, direction, body, template, params, timestamp }) {
+  if (!phone || !timestamp) return;
+  const phoneKey = phone.replace('whatsapp:', '');
+  const summaryRef = db.ref('chatSummary').child(phoneKey);
+
+  const previewText = body || (template ? `[${template}] ${(params || []).join(' / ')}` : '[media]');
+
+  await summaryRef.transaction(current => {
+    let unread = current && typeof current.unread === 'number' ? current.unread : 0;
+    if (direction === 'inbound') {
+      unread += 1;
+    }
+    return {
+      lastMessage: previewText,
+      lastTimestamp: timestamp,
+      unread
+    };
+  });
+}
+
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
 app.use(cors());
@@ -65,6 +86,14 @@ app.post('/webhook', async (req, res) => {
     timestamp
   });
 
+  // aggiorna il riepilogo per la chat inbound
+  await updateChatSummary({
+    phone: from,
+    direction: 'inbound',
+    body,
+    timestamp
+  });
+
   res.sendStatus(200);
 });
 
@@ -101,15 +130,24 @@ app.post('/status', async (req, res) => {
 app.post('/send', async (req, res) => {
   const { to, body } = req.body;
   try {
-    await client.messages.create({
+    const twilioMessage = await client.messages.create({
       from: `whatsapp:${process.env.TWILIO_NUMBER}`,
       to: `whatsapp:${to}`,
       body
     });
 
+    const timestamp = Date.now();
     await db.ref('messages').push({
       from: 'me', to: `whatsapp:${to}`, body,
-      direction: 'outbound', timestamp: Date.now()
+      direction: 'outbound', timestamp,
+      sid: twilioMessage.sid
+    });
+
+    await updateChatSummary({
+      phone: `whatsapp:${to}`,
+      direction: 'outbound',
+      body,
+      timestamp
     });
 
     res.sendStatus(200);
@@ -122,6 +160,8 @@ app.post('/send', async (req, res) => {
 app.post('/read', async (req, res) => {
   const { number } = req.body;
   await db.ref('readStatus/' + number).set(Date.now());
+   // azzera i non letti nel riepilogo
+   await db.ref('chatSummary/' + number).child('unread').set(0);
   res.sendStatus(200);
 });
 
@@ -150,6 +190,7 @@ app.post('/delete-chat', async (req, res) => {
 
     await db.ref().update(updates);
     await db.ref('readStatus/' + number).remove(); // opzionale: resetta lo stato lettura
+    await db.ref('chatSummary/' + number).remove();
     res.sendStatus(200);
   } catch (err) {
     console.error('Errore durante la cancellazione:', err);
