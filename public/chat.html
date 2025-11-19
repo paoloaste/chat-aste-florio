@@ -616,62 +616,74 @@
       firebase.auth().signOut();
     }
 
-    let grouped = {}, unread = {}, readStatus = {}, selected = null, lastMessageByChat = {};
+    // conversations: { conversationId: { phone, lastMessageText, lastMessageAt, unreadCount } }
+    // messagesByConv: { conversationId: [ { text, direction, timestamp, ... } ] }
+    let conversations = {}, messagesByConv = {}, selectedConv = null;
+    let conversationsPageSize = 50; // mostriamo 50 conversazioni alla volta
     const dbUrl = 'https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app';
 
     async function loadAll() {
       const user = firebase.auth().currentUser;
       const token = await user.getIdToken();
 
-      const [summary, status] = await Promise.all([
-        fetch(`${dbUrl}/chatSummary.json?auth=${token}`).then(r => r.json()),
-        fetch(`${dbUrl}/readStatus.json?auth=${token}`).then(r => r.json())
-      ]);
+      const summary = await fetch(`${dbUrl}/conversationSummaries.json?auth=${token}`).then(r => r.json());
 
-      console.log("✅ Riepilogo chat letto:", summary, status);
+      console.log("✅ Riepilogo conversazioni letto:", summary);
 
-      grouped = {}; unread = {}; lastMessageByChat = {}; readStatus = status || {};
-
+      conversations = {};
       if (summary) {
-        Object.keys(summary).forEach(phone => {
-          const info = summary[phone] || {};
-          lastMessageByChat[phone] = {
-            body: info.lastMessage || '',
-            timestamp: info.lastTimestamp || 0
-          };
-          unread[phone] = info.unread || 0;
+        Object.keys(summary).forEach(id => {
+          conversations[id] = summary[id] || {};
         });
       }
 
+      // reset paginazione ad ogni ricarica
+      conversationsPageSize = 50;
       renderSidebar();
     }
 
     function renderSidebar() {
       const ul = document.getElementById('chatList');
       ul.innerHTML = '';
-      Object.keys(grouped).sort((a, b) => {
-        const aT = (lastMessageByChat[a] || grouped[a].at(-1)).timestamp;
-        const bT = (lastMessageByChat[b] || grouped[b].at(-1)).timestamp;
+      const ids = Object.keys(conversations || {});
+      // Prima non letti, poi letti, entrambi ordinati per lastMessageAt desc
+      ids.sort((a, b) => {
+        const aConv = conversations[a] || {};
+        const bConv = conversations[b] || {};
+        const aUnread = aConv.unreadCount || 0;
+        const bUnread = bConv.unreadCount || 0;
+        if ((aUnread > 0) !== (bUnread > 0)) {
+          return bUnread - aUnread; // non letti prima
+        }
+        const aT = aConv.lastMessageAt || 0;
+        const bT = bConv.lastMessageAt || 0;
         return bT - aT;
-      }).forEach(num => {
-        const lastMsg = lastMessageByChat[num] || grouped[num].at(-1);
+      });
+
+      const limitedIds = ids.slice(0, conversationsPageSize);
+
+      limitedIds.forEach(id => {
+        const conv = conversations[id] || {};
+        const num = conv.phone || id;
+        const lastMsgText = conv.lastMessageText || '';
+        const timestamp = conv.lastMessageAt || 0;
         const li = document.createElement('li');
 
         const initials = num.replace('whatsapp:', '').slice(-2).toUpperCase();
-        const previewText = (lastMsg.body || lastMsg.text || '[media]').replace(/\n/g, ' ');
+        const previewText = (lastMsgText || '[media]').replace(/\n/g, ' ');
 
         li.innerHTML = `
           <div class="chat-avatar">${initials}</div>
           <div class="chat-info">
             <div class="chat-info-top">
               <span class="chat-name">${num}</span>
-              <span class="chat-time">${formatTime(lastMsg.timestamp)}</span>
+              <span class="chat-time">${timestamp ? formatTime(timestamp) : ''}</span>
             </div>
             <div class="chat-preview-row">
               <span class="chat-preview">${previewText}</span>
               <div class="chat-actions">
-                ${unread[num] ? `<span class="badge">${unread[num]}</span>` : ''}
-                <button class="chat-delete-btn" onclick="deleteChat('${num}')">✕</button>
+                ${conv.unreadCount ? `<span class="badge">${conv.unreadCount}</span>` : ''}
+                <button class="chat-delete-btn" onclick="deleteChat('${id}')">✕</button>
               </div>
             </div>
           </div>
@@ -679,7 +691,7 @@
 
         li.onclick = (e) => {
           if (!(e.target && (e.target.classList.contains('chat-delete-btn')))) {
-            loadChat(num, li);
+            loadChat(id, li);
           }
         };
         ul.appendChild(li);
@@ -694,14 +706,17 @@
       return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
     }
 
-    async function loadChat(number, li) {
-      selected = number;
+    async function loadChat(conversationId, li) {
+      selectedConv = conversationId;
       document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
       li.classList.add('active');
 
       const avatar = document.getElementById('chatAvatar');
       const headerName = document.getElementById('chatHeaderName');
       const headerStatus = document.getElementById('chatHeaderStatus');
+
+      const conv = conversations[conversationId] || {};
+      const number = conv.phone || conversationId;
 
       avatar.textContent = number.replace('whatsapp:', '').slice(-2).toUpperCase();
       headerName.textContent = number;
@@ -711,10 +726,8 @@
       fetch('/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number })
+        body: JSON.stringify({ conversationId })
       });
-
-      unread[number] = 0;
       li.querySelector('.badge')?.remove();
 
       const box = document.getElementById('chatMessages');
@@ -723,7 +736,31 @@
       if (placeholder) {
         placeholder.style.display = 'none';
       }
-      const sorted = grouped[number].sort((a, b) => a.timestamp - b.timestamp);
+
+      const user = firebase.auth().currentUser;
+      const token = await user.getIdToken();
+
+      if (!messagesByConv[conversationId]) {
+        const data = await fetch(`${dbUrl}/conversationMessages/${conversationId}.json?auth=${token}`).then(r => r.json());
+        const arr = [];
+        if (data) {
+          Object.keys(data).forEach(k => {
+            const msg = data[k];
+            // Compatibilità con vecchio schema (messages): body/text/direction
+            if (!msg.text && msg.body) msg.text = msg.body;
+            if (!msg.direction && msg.from && msg.to) {
+              // se arriva dal vecchio nodo potremmo aver salvato direction
+              msg.direction = msg.direction || (msg.from === 'me' ? 'out' : 'in');
+            }
+            arr.push(msg);
+          });
+        }
+        arr.sort((a, b) => a.timestamp - b.timestamp);
+        // opzionale: tieni solo gli ultimi 200
+        messagesByConv[conversationId] = arr.slice(-200);
+      }
+
+      const sorted = messagesByConv[conversationId];
 
       // Aggiungi il caricamento degli status
       const statuses = await loadStatuses();
@@ -825,25 +862,32 @@
       const body = input.value.trim();
       const fileInput = document.getElementById('fileInput');
       const hasFiles = fileInput && fileInput.files && fileInput.files.length > 0;
-      if (!selected || (!body && !hasFiles)) return;
+      if (!selectedConv || (!body && !hasFiles)) return;
+
+      const conv = conversations[selectedConv] || {};
+      const number = (conv.phone || '').replace('whatsapp:', '');
+      if (!number) return;
       fetch('/send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ to: selected, body })
+        body: JSON.stringify({ to: number, body, conversationId: selectedConv })
       }).then(res => {
         if (res.ok) {
           input.value = '';
           if (fileInput) fileInput.value = '';
           const msg = {
-            from: 'me',
-            to: selected,
-            direction: 'outbound',
-            timestamp: Date.now(),
-            body
+            text: body,
+            direction: 'out',
+            timestamp: Date.now()
           };
-          grouped[selected].push(msg);
-          lastMessageByChat[selected] = msg;
-          loadChat(selected, document.querySelector('.chat-list li.active'));
+          if (!messagesByConv[selectedConv]) messagesByConv[selectedConv] = [];
+          messagesByConv[selectedConv].push(msg);
+          // aggiorna anche il summary locale per la sidebar
+          if (!conversations[selectedConv]) conversations[selectedConv] = {};
+          conversations[selectedConv].lastMessageText = body;
+          conversations[selectedConv].lastMessageAt = msg.timestamp;
+          renderSidebar();
+          loadChat(selectedConv, document.querySelector('.chat-list li.active'));
         }
       });
     }
@@ -867,6 +911,18 @@
       });
     }
 
+    // Scroll infinito per caricare altre conversazioni a blocchi di 50
+    document.getElementById('chatList').addEventListener('scroll', (e) => {
+      const el = e.target;
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
+        const total = Object.keys(conversations || {}).length;
+        if (conversationsPageSize < total) {
+          conversationsPageSize += 50;
+          renderSidebar();
+        }
+      }
+    });
+
     // 🔄 Carica gli status da Firebase
     async function loadStatuses() {
       const user = firebase.auth().currentUser;
@@ -879,13 +935,13 @@
 
     // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
-    function deleteChat(number) {
-      if (!confirm(`Sei sicuro di voler cancellare la chat con ${number}?`)) return;
+    function deleteChat(conversationId) {
+      if (!confirm(`Sei sicuro di voler cancellare questa conversazione?`)) return;
 
       fetch('/delete-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number })
+        body: JSON.stringify({ conversationId })
       })
       .then(res => {
         if (res.ok) {
