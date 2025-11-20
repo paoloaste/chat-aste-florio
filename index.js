@@ -17,6 +17,24 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+// Gestione client collegati via Server-Sent Events (SSE)
+const sseClients = new Set();
+
+function broadcastEvent(payload) {
+  if (!payload) return;
+  const data = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.res.write(data);
+    } catch (err) {
+      console.error('❌ Errore invio SSE:', err);
+      client.res.end();
+      clearInterval(client.heartbeat);
+      sseClients.delete(client);
+    }
+  }
+}
+
 // Normalizza il numero in forma +39... togliendo l'eventuale prefisso whatsapp:
 function normalizePhone(raw) {
   if (!raw) return '';
@@ -77,6 +95,30 @@ app.use(express.static('public'));
 // Disabilita header inutili per un micro-backend più "snello"
 app.disable('x-powered-by');
 
+// Endpoint SSE per notificare nuovi messaggi alla dashboard
+app.get('/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  if (res.flushHeaders) res.flushHeaders();
+
+  res.write('retry: 5000\n\n');
+
+  const client = {
+    res,
+    heartbeat: setInterval(() => {
+      res.write(': ping\n\n');
+    }, 25000)
+  };
+
+  sseClients.add(client);
+
+  req.on('close', () => {
+    clearInterval(client.heartbeat);
+    sseClients.delete(client);
+  });
+});
+
 // Webhook Twilio
 app.post('/webhook', async (req, res) => {
   const from = req.body.From || req.body.from || req.body.Author;
@@ -122,6 +164,14 @@ app.post('/webhook', async (req, res) => {
     text: body || (media.length ? '[media]' : ''),
     timestamp,
     incrementUnread: true
+  });
+
+  broadcastEvent({
+    type: 'message',
+    conversationId,
+    direction: 'inbound',
+    timestamp,
+    phone: phoneKey
   });
 
   res.sendStatus(200);
@@ -186,6 +236,14 @@ app.post('/send', async (req, res) => {
       incrementUnread: false
     });
 
+    broadcastEvent({
+      type: 'message',
+      conversationId,
+      direction: 'outbound',
+      timestamp,
+      phone: phoneKey
+    });
+
     res.sendStatus(200);
   } catch (e) {
     console.error('❌ Errore /send:', e);
@@ -242,6 +300,21 @@ app.post('/read', async (req, res) => {
 
   await db.ref('conversationSummaries').child(conversationId).child('unreadCount').set(0);
   res.sendStatus(200);
+});
+
+app.post('/mark-unread', async (req, res) => {
+  const { conversationId, unreadCount } = req.body || {};
+  if (!conversationId) return res.sendStatus(400);
+
+  const count = Number.isFinite(unreadCount) ? Math.max(1, unreadCount) : 1;
+
+  try {
+    await db.ref('conversationSummaries').child(conversationId).child('unreadCount').set(count);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Errore /mark-unread:', err);
+    res.status(500).send('Errore aggiornamento stato');
+  }
 });
 
 app.post('/delete-chat', async (req, res) => {
