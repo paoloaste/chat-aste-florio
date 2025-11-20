@@ -40,6 +40,23 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH;
 const TWILIO_MEDIA_REGION = process.env.TWILIO_MEDIA_REGION || 'us1';
 
+const TEMPLATE_CONTENT_MAP = {
+  'conferma_meetv2': process.env.TWILIO_TEMPLATE_CONFERMA_MEETV2,
+  'promemoria_meetv2': process.env.TWILIO_TEMPLATE_PROMEMORIA_MEETV2,
+  'conferma_fisicov2': process.env.TWILIO_TEMPLATE_CONFERMA_FISICOV2,
+  'promemoria_fisicov2': process.env.TWILIO_TEMPLATE_PROMEMORIA_FISICOV2
+};
+
+function maskPhone(phone) {
+  if (!phone) return '';
+  const normalized = String(phone).replace(/[^+0-9]/g, '');
+  const hasPlus = normalized.startsWith('+');
+  const core = hasPlus ? normalized.slice(1) : normalized;
+  if (core.length <= 4) return normalized;
+  const maskedCore = `${'*'.repeat(core.length - 4)}${core.slice(-4)}`;
+  return hasPlus ? `+${maskedCore}` : maskedCore;
+}
+
 function stripWhatsappPrefix(raw) {
   if (!raw) return '';
   let value = String(raw).trim();
@@ -81,6 +98,26 @@ function safeJsonParse(payload, fallback = null) {
   } catch (err) {
     return fallback;
   }
+}
+
+function getTemplateContentSid(templateName) {
+  if (!templateName) return null;
+  return TEMPLATE_CONTENT_MAP[templateName.toLowerCase()] || null;
+}
+
+function buildTemplatePreview(templateName, params = []) {
+  const values = Array.isArray(params) ? params.map(p => String(p ?? '')).filter(Boolean) : [];
+  const preview = values.length ? `[${templateName}] ${values.join(' / ')}` : `[${templateName}]`;
+  return preview;
+}
+
+function buildContentVariables(params = []) {
+  if (!Array.isArray(params) || params.length === 0) return undefined;
+  const payload = {};
+  params.forEach((value, index) => {
+    payload[String(index + 1)] = value ?? '';
+  });
+  return JSON.stringify(payload);
 }
 
 function extractMediaInfo(url) {
@@ -401,7 +438,7 @@ app.post('/status', async (req, res) => {
 
 // Invia risposta
 app.post('/send', async (req, res) => {
-  const { to, body, conversationId: clientConversationId } = req.body;
+  const { to, body, template, params = [], conversationId: clientConversationId } = req.body;
 
   const normalizedRecipient = normalizePhone(to);
   if (!normalizedRecipient) {
@@ -416,24 +453,67 @@ app.post('/send', async (req, res) => {
     return res.status(500).json({ error: 'Configurazione WhatsApp non valida' });
   }
 
+  const sanitizedTemplate = template ? String(template).trim() : '';
+  const templateSid = getTemplateContentSid(sanitizedTemplate);
+  const paramsArray = Array.isArray(params) ? params.map(p => String(p ?? '')) : [];
+
+  if (sanitizedTemplate && !templateSid) {
+    return res.status(400).json({ error: `Template ${sanitizedTemplate} non configurato su Twilio` });
+  }
+
+  let renderedBody = body ? String(body) : '';
+  if (!renderedBody && sanitizedTemplate) {
+    renderedBody = buildTemplatePreview(sanitizedTemplate, paramsArray);
+  }
+
+  if (!renderedBody && !sanitizedTemplate) {
+    return res.status(400).json({ error: 'Corpo del messaggio mancante' });
+  }
+
+  const payloadDebug = {
+    to: maskPhone(normalizedRecipient),
+    template: sanitizedTemplate || null,
+    contentSid: templateSid || null,
+    paramsCount: paramsArray.length
+  };
+
+  console.log('🚀 Invio WhatsApp richiesto', payloadDebug);
+
   try {
     const timestamp = Date.now();
     const phoneKey = normalizedRecipient;
     const conversationId = clientConversationId || await getOrCreateConversationId(phoneKey);
 
-    const twilioMessage = await client.messages.create({
+    const twilioPayload = {
       from: fromAddress,
-      to: toAddress,
-      body
+      to: toAddress
+    };
+
+    if (templateSid) {
+      twilioPayload.contentSid = templateSid;
+      const contentVariables = buildContentVariables(paramsArray);
+      if (contentVariables) twilioPayload.contentVariables = contentVariables;
+    } else {
+      twilioPayload.body = renderedBody;
+    }
+
+    const twilioMessage = await client.messages.create(twilioPayload);
+
+    console.log('✅ Twilio queued message', {
+      ...payloadDebug,
+      sid: twilioMessage.sid,
+      status: twilioMessage.status || 'queued'
     });
 
     const msgRef = db.ref('conversationMessages').child(conversationId).push();
     const messageId = msgRef.key;
     await msgRef.set({
-      text: body,
+      text: renderedBody,
       direction: 'outbound',
       timestamp,
-      sid: twilioMessage.sid
+      sid: twilioMessage.sid,
+      template: sanitizedTemplate || null,
+      params: paramsArray
     });
 
     await saveMessageStatus(conversationId, twilioMessage.sid, {
@@ -443,7 +523,7 @@ app.post('/send', async (req, res) => {
 
     const summary = await updateConversationSummary(conversationId, {
       phone: phoneKey,
-      text: body,
+      text: renderedBody,
       timestamp,
       incrementUnread: false
     });
@@ -463,17 +543,33 @@ app.post('/send', async (req, res) => {
       summary,
       message: {
         id: messageId,
-        text: body,
+        text: renderedBody,
         direction: 'outbound',
         timestamp,
-        sid: twilioMessage.sid
+        sid: twilioMessage.sid,
+        template: sanitizedTemplate || null,
+        params: paramsArray
       }
     });
 
     res.json(responsePayload);
   } catch (e) {
-    console.error('❌ Errore /send:', e);
-    res.status(500).json({ error: e.message || 'Errore invio' });
+    console.error('❌ Errore /send:', {
+      ...payloadDebug,
+      message: e.message,
+      code: e.code || null,
+      status: e.status || null,
+      moreInfo: e.moreInfo || null,
+      details: e.details || null
+    });
+
+    const statusCode = Number.isInteger(e.status) ? e.status : 500;
+    res.status(statusCode).json({
+      error: e.message || 'Errore invio',
+      code: e.code || null,
+      status: e.status || null,
+      moreInfo: e.moreInfo || null
+    });
   }
 });
 
