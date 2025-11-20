@@ -39,6 +39,7 @@ function broadcastEvent(payload) {
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH;
 const TWILIO_MEDIA_REGION = process.env.TWILIO_MEDIA_REGION || 'us1';
+const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID || '';
 
 const TEMPLATE_CONTENT_MAP = {
   'conferma_meetv2': process.env.TWILIO_TEMPLATE_CONFERMA_MEETV2,
@@ -446,11 +447,16 @@ app.post('/send', async (req, res) => {
   }
 
   const fromEnv = process.env.TWILIO_NUMBER || process.env.TWILIO_FROM || '';
-  const fromAddress = fromEnv.startsWith('whatsapp:') ? fromEnv : buildWhatsappAddress(fromEnv);
+  const fromAddress = fromEnv ? (fromEnv.startsWith('whatsapp:') ? fromEnv : buildWhatsappAddress(fromEnv)) : '';
   const toAddress = buildWhatsappAddress(normalizedRecipient);
+  const useMessagingService = Boolean(TWILIO_MESSAGING_SERVICE_SID);
 
-  if (!fromAddress || !toAddress) {
-    return res.status(500).json({ error: 'Configurazione WhatsApp non valida' });
+  if (!toAddress) {
+    return res.status(500).json({ error: 'Numero destinatario non supportato' });
+  }
+
+  if (!useMessagingService && !fromAddress) {
+    return res.status(500).json({ error: 'Configurazione WhatsApp non valida (mittente mancante)' });
   }
 
   const sanitizedTemplate = template ? String(template).trim() : '';
@@ -474,7 +480,8 @@ app.post('/send', async (req, res) => {
     to: maskPhone(normalizedRecipient),
     template: sanitizedTemplate || null,
     contentSid: templateSid || null,
-    paramsCount: paramsArray.length
+    paramsCount: paramsArray.length,
+    route: useMessagingService ? 'messaging-service' : 'direct-number'
   };
 
   console.log('🚀 Invio WhatsApp richiesto', payloadDebug);
@@ -485,9 +492,14 @@ app.post('/send', async (req, res) => {
     const conversationId = clientConversationId || await getOrCreateConversationId(phoneKey);
 
     const twilioPayload = {
-      from: fromAddress,
       to: toAddress
     };
+
+    if (useMessagingService) {
+      twilioPayload.messagingServiceSid = TWILIO_MESSAGING_SERVICE_SID;
+    } else {
+      twilioPayload.from = fromAddress;
+    }
 
     if (templateSid) {
       twilioPayload.contentSid = templateSid;
