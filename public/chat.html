@@ -571,22 +571,36 @@
       apiKey: "AIzaSyAtsIoHSxlRXRLRPulOiqIJtuxOWIbZGag",
       authDomain: "aste-florio.firebaseapp.com",
       databaseURL: "https://aste-florio-default-rtdb.europe-west1.firebasedatabase.app",
-      projectId: "aste-florio",
+      projectId: "aste-florio"
     };
     firebase.initializeApp(firebaseConfig);
 
+    const loginBox = document.getElementById('loginBox');
+    const appShell = document.getElementById('appShell');
+
     firebase.auth().onAuthStateChanged(user => {
       if (user) {
-        document.getElementById('loginBox').style.display = 'none';
-        document.getElementById('appShell').style.display = 'flex';
+        toggleAuthView(true);
         loadAll();
         startRealtimeUpdates();
       } else {
         stopRealtimeUpdates();
-        document.getElementById('loginBox').style.display = 'flex';
-        document.getElementById('appShell').style.display = 'none';
+        toggleAuthView(false);
       }
     });
+
+    function toggleAuthView(authenticated) {
+      if (authenticated) {
+        loginBox.style.display = 'none';
+        appShell.style.display = 'flex';
+      } else {
+        loginBox.style.display = 'flex';
+        appShell.style.display = 'none';
+        selectedConv = null;
+        messagesByConv = {};
+        conversationStatuses = {};
+      }
+    }
 
     function login() {
       const email = document.getElementById('email').value.trim();
@@ -618,34 +632,40 @@
       firebase.auth().signOut();
     }
 
-    // conversations: { conversationId: { phone, lastMessageText, lastMessageAt, unreadCount } }
-    // messagesByConv: { conversationId: [ { text, direction, timestamp, ... } ] }
-    let conversations = {}, messagesByConv = {}, selectedConv = null;
-    let conversationsPageSize = 50; // mostriamo 50 conversazioni alla volta
-    let activeListItem = null;
+    let conversations = {};
+    let messagesByConv = {};
+    let conversationStatuses = {};
+    let selectedConv = null;
+    let conversationsPageSize = 50;
     let eventSource = null;
     let pollingTimer = null;
     const POLLING_INTERVAL_MS = 12000;
 
     async function loadAll() {
-      const res = await fetch('/conversations');
-      const list = await res.json();
+      try {
+        const res = await fetch('/conversations');
+        const list = await res.json();
 
-      conversations = {};
-      if (Array.isArray(list)) {
-        list.forEach(conv => {
-          if (conv && conv.id) {
-            conversations[conv.id] = conv;
-          }
-        });
+        conversations = {};
+        if (Array.isArray(list)) {
+          list.forEach(conv => {
+            if (conv && conv.id) {
+              conversations[conv.id] = conv;
+            }
+          });
+        }
+
+        conversationsPageSize = 50;
+        renderSidebar();
+        filterChats();
+      } catch (err) {
+        console.error('Errore caricando le conversazioni:', err);
       }
-
-      conversationsPageSize = 50;
-      renderSidebar();
     }
 
     function renderSidebar() {
       const ul = document.getElementById('chatList');
+      if (!ul) return;
       ul.innerHTML = '';
       const ids = Object.keys(conversations || {});
 
@@ -695,10 +715,13 @@
 
         if (id === selectedConv) {
           li.classList.add('active');
-          activeListItem = li;
+          li.querySelector('.badge')?.remove();
         }
+
         ul.appendChild(li);
       });
+
+      filterChats();
     }
 
     function formatDate(ts) {
@@ -718,19 +741,33 @@
       return 'inbound';
     }
 
+    function normalizeMessage(raw) {
+      if (!raw) return null;
+      const clone = { ...raw };
+      clone.direction = normalizeDirection(clone.direction);
+      if (!clone.timestamp) clone.timestamp = Date.now();
+      if (!clone.text && clone.body) clone.text = clone.body;
+      return clone;
+    }
+
+    function getStatusIcon(entry) {
+      if (!entry || !entry.status) return '';
+      const status = entry.status.toLowerCase();
+      if (status === 'read' || status === 'delivered' || status === 'sent') return '✔✔';
+      if (status === 'queued') return '✔';
+      if (status === 'failed' || status === 'undelivered') return '❌';
+      return '';
+    }
+
     async function loadChat(conversationId, li) {
       selectedConv = conversationId;
       document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
 
-      let targetLi = li;
-      if (!targetLi) {
-        targetLi = document.querySelector(`.chat-list li[data-conversation-id="${conversationId}"]`);
-      }
+      let targetLi = li || document.querySelector(`.chat-list li[data-conversation-id="${conversationId}"]`);
       if (targetLi) {
         targetLi.classList.add('active');
         targetLi.querySelector('.badge')?.remove();
       }
-      activeListItem = targetLi || null;
 
       const avatar = document.getElementById('chatAvatar');
       const headerName = document.getElementById('chatHeaderName');
@@ -743,39 +780,62 @@
       headerName.textContent = number;
       headerStatus.textContent = 'Online';
 
-      // aggiorna stato lettura
       fetch('/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId })
-      });
+      }).catch(err => console.warn('Errore /read:', err));
+      if (conversations[conversationId]) {
+        conversations[conversationId].unreadCount = 0;
+      }
 
-      const box = document.getElementById('chatMessages');
-      box.innerHTML = '';
       const placeholder = document.getElementById('chatPlaceholder');
-      if (placeholder) {
-        placeholder.style.display = 'none';
+      if (placeholder) placeholder.style.display = 'none';
+
+      try {
+        await ensureMessagesLoaded(conversationId);
+        await fetchConversationStatuses(conversationId);
+        renderConversation(conversationId);
+      } catch (err) {
+        console.error('Errore caricando la chat', err);
       }
+    }
 
-      if (!messagesByConv[conversationId]) {
-        const data = await fetch(`/conversation-messages?id=${encodeURIComponent(conversationId)}`).then(r => r.json());
-        const arr = [];
-        if (Array.isArray(data)) {
-          data.forEach(msg => {
-            const m = Object.assign({}, msg);
-            if (!m.text && m.body) m.text = m.body;
-            m.direction = normalizeDirection(m.direction);
-            arr.push(m);
-          });
-        }
-        arr.sort((a, b) => a.timestamp - b.timestamp);
-        messagesByConv[conversationId] = arr.slice(-500);
+    async function ensureMessagesLoaded(conversationId) {
+      if (messagesByConv[conversationId]) return messagesByConv[conversationId];
+      const res = await fetch(`/conversation-messages?id=${encodeURIComponent(conversationId)}`);
+      const data = await res.json();
+      const arr = [];
+      if (Array.isArray(data)) {
+        data.forEach(msg => {
+          const normalized = normalizeMessage(msg);
+          if (normalized) arr.push(normalized);
+        });
       }
+      arr.sort((a, b) => a.timestamp - b.timestamp);
+      messagesByConv[conversationId] = arr.slice(-500);
+      return messagesByConv[conversationId];
+    }
 
-      const sorted = messagesByConv[conversationId];
+    async function fetchConversationStatuses(conversationId) {
+      try {
+        const res = await fetch(`/message-status?conversationId=${encodeURIComponent(conversationId)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        conversationStatuses[conversationId] = data || {};
+      } catch (err) {
+        console.warn('Errore caricando gli status della conversazione', err);
+        conversationStatuses[conversationId] = conversationStatuses[conversationId] || {};
+      }
+    }
 
-      // Aggiungi il caricamento degli status
-      const statuses = await loadStatuses();
+    function renderConversation(conversationId) {
+      const box = document.getElementById('chatMessages');
+      if (!box) return;
+      box.innerHTML = '';
+
+      const sorted = (messagesByConv[conversationId] || []).slice(-500);
+      const statuses = conversationStatuses[conversationId] || {};
 
       let lastDate = '';
 
@@ -789,61 +849,60 @@
           box.appendChild(divDate);
           lastDate = d;
         }
-  const row = document.createElement('div');
-  row.className = 'message-row ' + m.direction;
 
-  const div = document.createElement('div');
-  div.className = 'message ' + m.direction;
+        const row = document.createElement('div');
+        row.className = 'message-row ' + m.direction;
+
+        const div = document.createElement('div');
+        div.className = 'message ' + m.direction;
 
         const messageSid = m.sid || (m.params && m.params.sid);
-        let latest = null;
-  let statusHtml = '';
-
-        if (m.direction === 'outbound' && messageSid && statuses) {
-          for (let key in statuses) {
-            const s = statuses[key];
-            if (s.sid === messageSid) {
-              if (!latest || s.timestamp > latest.timestamp) {
-                latest = s;
-              }
-            }
-          }
-
-          if (latest) {
-            if (latest.status === 'read') statusHtml = '✔✔';
-            else if (latest.status === 'delivered') statusHtml = '✔✔';
-            else if (latest.status === 'sent') statusHtml = '✔✔';
-            else if (latest.status === 'queued') statusHtml = '✔';
-            else if (latest.status === 'failed' || latest.status === 'undelivered') {
-              statusHtml = '❌';
-            } else {
-              statusHtml = '';
-            }
-          }
+        let statusHtml = '';
+        if (m.direction === 'outbound' && messageSid && statuses[messageSid]) {
+          statusHtml = getStatusIcon(statuses[messageSid]);
         }
 
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
         let textContent = '';
-        if (m.body) {
-          textContent = m.body;
-        } else if (m.text) {
-          textContent = m.text;
-        } else if (m.params && Array.isArray(m.params)) {
-          textContent = `[${m.template}] ` + m.params.join(" / ");
+        if (m.body) textContent = m.body;
+        else if (m.text) textContent = m.text;
+        else if (m.params && Array.isArray(m.params)) {
+          textContent = `[${m.template}] ` + m.params.join(' / ');
         }
 
-        // Mostra solo testo; se ci sono media aggiungi un tag testuale
         if (m.media && Array.isArray(m.media) && m.media.length) {
-          if (textContent) {
-            textContent += '\n[media]';
-          } else {
-            textContent = '[media]';
-          }
+          textContent = textContent && textContent !== '[media]' ? textContent : '';
         }
 
         textDiv.textContent = textContent;
         div.appendChild(textDiv);
+
+        if (Array.isArray(m.media) && m.media.length) {
+          const mediaWrapper = document.createElement('div');
+          mediaWrapper.className = 'message-media';
+          m.media.forEach(item => {
+            const mediaUrl = item.proxyUrl || item.url || item.originalUrl;
+            if (!mediaUrl) return;
+            const contentType = (item.contentType || '').toLowerCase();
+            if (contentType.startsWith('image/')) {
+              const img = document.createElement('img');
+              img.src = mediaUrl;
+              img.alt = item.filename || 'Immagine';
+              img.loading = 'lazy';
+              img.onclick = () => window.open(mediaUrl, '_blank');
+              mediaWrapper.appendChild(img);
+            } else {
+              const link = document.createElement('a');
+              link.href = mediaUrl;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.textContent = item.filename || item.contentType || 'Allegato';
+              mediaWrapper.appendChild(link);
+            }
+          });
+          div.appendChild(mediaWrapper);
+        }
 
         const tsDiv = document.createElement('div');
         tsDiv.className = 'timestamp';
@@ -870,7 +929,7 @@
       if (e.key === 'Enter') sendMessage();
     }
 
-    function sendMessage() {
+    async function sendMessage() {
       const input = document.getElementById('msgInput');
       const body = input.value.trim();
       if (!selectedConv || !body) return;
@@ -878,50 +937,82 @@
       const conv = conversations[selectedConv] || {};
       const number = (conv.phone || '').replace('whatsapp:', '');
       if (!number) return;
-      fetch('/send', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ to: number, body, conversationId: selectedConv })
-      }).then(res => {
-        if (res.ok) {
-          input.value = '';
-          const msg = {
-            text: body,
-            direction: 'outbound',
-            timestamp: Date.now()
-          };
-          if (!messagesByConv[selectedConv]) messagesByConv[selectedConv] = [];
-          messagesByConv[selectedConv].push(msg);
-          if (!conversations[selectedConv]) conversations[selectedConv] = {};
-          conversations[selectedConv].lastMessageText = body;
-          conversations[selectedConv].lastMessageAt = msg.timestamp;
-          renderSidebar();
-          const activeLi = document.querySelector('.chat-list li.active') || document.querySelector('.chat-list li');
-          if (activeLi) loadChat(selectedConv, activeLi);
+      const optimistic = normalizeMessage({
+        text: body,
+        direction: 'outbound',
+        timestamp: Date.now()
+      }) || { text: body, direction: 'outbound', timestamp: Date.now() };
+      optimistic.__optimistic = true;
+      if (!messagesByConv[selectedConv]) messagesByConv[selectedConv] = [];
+      messagesByConv[selectedConv].push(optimistic);
+      if (messagesByConv[selectedConv].length > 500) {
+        messagesByConv[selectedConv].splice(0, messagesByConv[selectedConv].length - 500);
+      }
+      if (!conversations[selectedConv]) conversations[selectedConv] = {};
+      conversations[selectedConv].lastMessageText = body;
+      conversations[selectedConv].lastMessageAt = optimistic.timestamp;
+      renderSidebar();
+      renderConversation(selectedConv);
+
+      try {
+        const response = await fetch('/send', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ to: number, body, conversationId: selectedConv })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText || `HTTP ${response.status}`);
         }
-      });
+
+        const payload = await response.json().catch(() => ({}));
+        input.value = '';
+        if (payload?.sid) {
+          optimistic.sid = payload.sid;
+          if (!conversationStatuses[selectedConv]) conversationStatuses[selectedConv] = {};
+          conversationStatuses[selectedConv][payload.sid] = {
+            status: (payload.status || 'queued').toLowerCase()
+          };
+        }
+        if (payload?.conversationId && !selectedConv) {
+          selectedConv = payload.conversationId;
+        }
+      } catch (err) {
+        console.error('Errore invio messaggio:', err);
+        optimistic.status = 'failed';
+        optimistic.errorMessage = 'Invio non riuscito';
+        optimistic.__optimistic = false;
+        if (!conversationStatuses[selectedConv]) conversationStatuses[selectedConv] = {};
+        conversationStatuses[selectedConv][optimistic.sid || `optimistic-${optimistic.timestamp}`] = {
+          status: 'failed'
+        };
+        renderConversation(selectedConv);
+        alert('Invio non riuscito. Controlla il numero e riprova.');
+      }
     }
 
     function handleFileChange(e) {
       const files = e.target.files;
       if (!files || !files.length) return;
-      // Qui potresti mostrare un piccolo riepilogo dei file selezionati
-      // e, lato server, estendere /send per supportare upload/media.
     }
-
 
     function filterChats() {
       const term = document.getElementById('searchInput').value.toLowerCase();
+      const unreadOnly = document.getElementById('unreadOnly').checked;
       const items = document.querySelectorAll('#chatList li');
       items.forEach(li => {
         const nameEl = li.querySelector('.chat-name');
         const previewEl = li.querySelector('.chat-preview');
-        const text = ((nameEl && nameEl.textContent) + ' ' + (previewEl && previewEl.textContent)).toLowerCase();
-        li.style.display = text.includes(term) ? '' : 'none';
+        const text = ((nameEl?.textContent || '') + ' ' + (previewEl?.textContent || '')).toLowerCase();
+        const convId = li.dataset.conversationId;
+        const unreadCount = (conversations[convId]?.unreadCount) || 0;
+        const matchesText = !term || text.includes(term);
+        const matchesUnread = !unreadOnly || unreadCount > 0;
+        li.style.display = matchesText && matchesUnread ? '' : 'none';
       });
     }
 
-    // Scroll infinito per caricare altre conversazioni a blocchi di 50
     document.getElementById('chatList').addEventListener('scroll', (e) => {
       const el = e.target;
       if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
@@ -932,14 +1023,6 @@
         }
       }
     });
-
-    // 🔄 Carica gli status da Firebase
-    async function loadStatuses() {
-      const res = await fetch('/logs/status');
-      return await res.json() || {};
-    }
-
-    // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
     function stopPollingFallback() {
       if (pollingTimer) {
@@ -997,6 +1080,7 @@
         const conversationToReload = targetConversationId || selectedConv;
         if (conversationToReload) {
           delete messagesByConv[conversationToReload];
+          delete conversationStatuses[conversationToReload];
           const li = document.querySelector(`.chat-list li[data-conversation-id="${conversationToReload}"]`);
           if (li) {
             await loadChat(conversationToReload, li);
@@ -1008,9 +1092,85 @@
     }
 
     function handleServerEvent(eventPayload) {
-      if (!eventPayload || eventPayload.type !== 'message') return;
-      if (!eventPayload.conversationId) return;
-      refreshData(eventPayload.conversationId);
+      if (!eventPayload || !eventPayload.type) return;
+      const { type } = eventPayload;
+      if (type === 'message') {
+        applyMessageEvent(eventPayload);
+      } else if (type === 'status') {
+        applyStatusEvent(eventPayload);
+      } else if (type === 'summary') {
+        applySummaryEvent(eventPayload);
+      }
+    }
+
+    function applySummaryEvent({ conversationId, summary }) {
+      if (!conversationId || !summary) return;
+      conversations[conversationId] = { ...(conversations[conversationId] || {}), ...summary };
+      renderSidebar();
+    }
+
+    function applyMessageEvent({ conversationId, summary, message, phone }) {
+      if (!conversationId) return;
+      if (summary) {
+        conversations[conversationId] = { ...(conversations[conversationId] || {}), ...summary };
+        renderSidebar();
+      } else if (message) {
+        const existing = conversations[conversationId] || {};
+        conversations[conversationId] = {
+          ...existing,
+          phone: existing.phone || phone || conversationId,
+          lastMessageText: message.text || existing.lastMessageText || '',
+          lastMessageAt: message.timestamp || existing.lastMessageAt || Date.now()
+        };
+        if (message.direction === 'inbound') {
+          conversations[conversationId].unreadCount = (conversations[conversationId].unreadCount || 0) + 1;
+        }
+        renderSidebar();
+      }
+      if (message) {
+        mergeIncomingMessage(conversationId, message);
+      }
+    }
+
+    function mergeIncomingMessage(conversationId, rawMessage) {
+      const normalized = normalizeMessage(rawMessage);
+      if (!normalized) return;
+      const list = messagesByConv[conversationId];
+      if (!list) return;
+
+      if (normalized.direction === 'outbound') {
+        const idx = list.findIndex(m => m.__optimistic && !m.sid && Math.abs((m.timestamp || 0) - (normalized.timestamp || 0)) < 2000 && (m.text || '') === (normalized.text || ''));
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], ...normalized, __optimistic: false };
+        } else {
+          list.push(normalized);
+        }
+      } else {
+        list.push(normalized);
+      }
+
+      list.sort((a, b) => a.timestamp - b.timestamp);
+      if (list.length > 500) {
+        list.splice(0, list.length - 500);
+      }
+      if (selectedConv === conversationId) {
+        renderConversation(conversationId);
+      }
+    }
+
+    function applyStatusEvent({ conversationId, sid, status, errorCode, errorMessage, timestamp }) {
+      if (!conversationId || !sid) return;
+      if (!conversationStatuses[conversationId]) conversationStatuses[conversationId] = {};
+      conversationStatuses[conversationId][sid] = {
+        sid,
+        status,
+        errorCode: errorCode || null,
+        errorMessage: errorMessage || null,
+        timestamp: timestamp || Date.now()
+      };
+      if (selectedConv === conversationId) {
+        renderConversation(conversationId);
+      }
     }
 
     function markUnread(conversationId, event) {
@@ -1026,7 +1186,7 @@
         if (!conversations[conversationId]) {
           conversations[conversationId] = { unreadCount: 1 };
         } else {
-          conversations[conversationId].unreadCount = Math.max(conversations[conversationId].unreadCount || 0, 1);
+          conversations[conversationId].unreadCount = 1;
         }
         renderSidebar();
       });
@@ -1034,7 +1194,7 @@
 
     function deleteChat(conversationId, event) {
       if (event) event.stopPropagation();
-      if (!confirm(`Sei sicuro di voler cancellare questa conversazione?`)) return;
+      if (!confirm('Sei sicuro di voler cancellare questa conversazione?')) return;
 
       fetch('/delete-chat', {
         method: 'POST',
@@ -1044,7 +1204,7 @@
       .then(res => {
         if (res.ok) {
           alert('Chat cancellata con successo');
-          loadAll(); // ricarica la sidebar aggiornata
+          loadAll();
         } else {
           alert('Errore durante la cancellazione della chat');
         }
