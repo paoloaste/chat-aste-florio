@@ -67,14 +67,7 @@ async function updateConversationSummary(conversationId, { phone, text, timestam
   });
 }
 
-const hasTwilioCredentials =
-  process.env.TWILIO_SID &&
-  process.env.TWILIO_AUTH &&
-  String(process.env.TWILIO_SID).startsWith('AC');
-
-const client = hasTwilioCredentials
-  ? twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH)
-  : null;
+const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -172,28 +165,18 @@ app.post('/send', async (req, res) => {
     const phoneKey = normalizePhone(to);
     const conversationId = clientConversationId || await getOrCreateConversationId(phoneKey);
 
-    let sid = null;
-
-    if (client && hasTwilioCredentials) {
-      // Produzione: invio reale tramite Twilio
-      const twilioMessage = await client.messages.create({
-        from: `whatsapp:${process.env.TWILIO_NUMBER}`,
-        to: `whatsapp:${to}`,
-        body
-      });
-      sid = twilioMessage.sid;
-    } else {
-      // Sviluppo / locale: niente Twilio, ma scriviamo comunque su Firebase
-      sid = `local-${Date.now()}`;
-      console.log('⚠️ Twilio non configurato: salvo solo su Firebase', { to, body });
-    }
+    const twilioMessage = await client.messages.create({
+      from: `whatsapp:${process.env.TWILIO_NUMBER}`,
+      to: `whatsapp:${to}`,
+      body
+    });
 
     const msgRef = db.ref('conversationMessages').child(conversationId).push();
     await msgRef.set({
       text: body,
       direction: 'outbound',
       timestamp,
-      sid
+      sid: twilioMessage.sid
     });
 
     await updateConversationSummary(conversationId, {
