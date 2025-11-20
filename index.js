@@ -39,7 +39,14 @@ function broadcastEvent(payload) {
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH;
 const TWILIO_MEDIA_REGION = process.env.TWILIO_MEDIA_REGION || 'us1';
-const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID || '';
+const TWILIO_MESSAGING_SERVICE_SID = sanitizeEnvValue(
+  process.env.TWILIO_MESSAGING_SERVICE_SID,
+  { pattern: /^MG[a-f0-9]{32}$/i }
+);
+
+if (process.env.TWILIO_MESSAGING_SERVICE_SID && !TWILIO_MESSAGING_SERVICE_SID) {
+  console.warn('[WARN] TWILIO_MESSAGING_SERVICE_SID non valido o placeholder: uso il numero diretto.');
+}
 
 const TEMPLATE_CONTENT_MAP = {
   'conferma_meetv2': process.env.TWILIO_TEMPLATE_CONFERMA_MEETV2,
@@ -47,6 +54,27 @@ const TEMPLATE_CONTENT_MAP = {
   'conferma_fisicov2': process.env.TWILIO_TEMPLATE_CONFERMA_FISICOV2,
   'promemoria_fisicov2': process.env.TWILIO_TEMPLATE_PROMEMORIA_FISICOV2
 };
+
+function sanitizeEnvValue(value, options = {}) {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+
+  const lower = raw.toLowerCase();
+  const placeholderHints = ['inserisci', 'placeholder', 'your_', 'changeme', 'todo'];
+  if (placeholderHints.some(hint => lower.includes(hint))) {
+    return '';
+  }
+
+  if (options.prefix && !raw.startsWith(options.prefix)) {
+    return '';
+  }
+
+  if (options.pattern && !options.pattern.test(raw)) {
+    return '';
+  }
+
+  return raw;
+}
 
 function maskPhone(phone) {
   if (!phone) return '';
