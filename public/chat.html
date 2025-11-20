@@ -237,6 +237,21 @@
       align-items: center;
     }
 
+      .chat-action-btn {
+        background: transparent;
+        border: none;
+        color: #8696a0;
+        font-size: 16px;
+        cursor: pointer;
+        margin-left: 6px;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+
+      .chat-list li:hover .chat-action-btn {
+        opacity: 1;
+      }
+
     .badge {
       background: var(--wa-accent);
       color: #111b21;
@@ -246,21 +261,6 @@
       margin-left: 4px;
       min-width: 18px;
       text-align: center;
-    }
-
-    .chat-delete-btn {
-      background: transparent;
-      border: none;
-      color: #8696a0;
-      font-size: 16px;
-      cursor: pointer;
-      margin-left: 6px;
-      opacity: 0;
-      transition: opacity 0.15s ease;
-    }
-
-    .chat-list li:hover .chat-delete-btn {
-      opacity: 1;
     }
 
     /* CHAT WINDOW */
@@ -580,7 +580,9 @@
         document.getElementById('loginBox').style.display = 'none';
         document.getElementById('appShell').style.display = 'flex';
         loadAll();
+        startRealtimeUpdates();
       } else {
+        stopRealtimeUpdates();
         document.getElementById('loginBox').style.display = 'flex';
         document.getElementById('appShell').style.display = 'none';
       }
@@ -620,6 +622,10 @@
     // messagesByConv: { conversationId: [ { text, direction, timestamp, ... } ] }
     let conversations = {}, messagesByConv = {}, selectedConv = null;
     let conversationsPageSize = 50; // mostriamo 50 conversazioni alla volta
+    let activeListItem = null;
+    let eventSource = null;
+    let pollingTimer = null;
+    const POLLING_INTERVAL_MS = 12000;
 
     async function loadAll() {
       const res = await fetch('/conversations');
@@ -659,6 +665,7 @@
         const lastMsgText = conv.lastMessageText || '';
         const timestamp = conv.lastMessageAt || 0;
         const li = document.createElement('li');
+        li.dataset.conversationId = id;
 
         const initials = num.replace('whatsapp:', '').slice(-2).toUpperCase();
         const previewText = (lastMsgText || '[media]').replace(/\n/g, ' ');
@@ -674,17 +681,22 @@
               <span class="chat-preview">${previewText}</span>
               <div class="chat-actions">
                 ${conv.unreadCount ? `<span class="badge">${conv.unreadCount}</span>` : ''}
-                <button class="chat-delete-btn" onclick="deleteChat('${id}')">✕</button>
+                <button class="chat-action-btn" title="Segna come da leggere" onclick="markUnread('${id}', event)">👁</button>
+                <button class="chat-action-btn" title="Cancella chat" onclick="deleteChat('${id}', event)">✕</button>
               </div>
             </div>
           </div>
         `;
 
         li.onclick = (e) => {
-          if (!(e.target && (e.target.classList.contains('chat-delete-btn')))) {
-            loadChat(id, li);
-          }
+          if (e.target && e.target.closest('.chat-action-btn')) return;
+          loadChat(id, li);
         };
+
+        if (id === selectedConv) {
+          li.classList.add('active');
+          activeListItem = li;
+        }
         ul.appendChild(li);
       });
     }
@@ -697,10 +709,28 @@
       return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
     }
 
+    function normalizeDirection(dir) {
+      const value = (dir || '').toString().toLowerCase();
+      if (value.startsWith('out')) return 'outbound';
+      if (value.startsWith('in')) return 'inbound';
+      if (value === 'sent') return 'outbound';
+      if (value === 'received') return 'inbound';
+      return 'inbound';
+    }
+
     async function loadChat(conversationId, li) {
       selectedConv = conversationId;
       document.querySelectorAll('.chat-list li').forEach(l => l.classList.remove('active'));
-      li.classList.add('active');
+
+      let targetLi = li;
+      if (!targetLi) {
+        targetLi = document.querySelector(`.chat-list li[data-conversation-id="${conversationId}"]`);
+      }
+      if (targetLi) {
+        targetLi.classList.add('active');
+        targetLi.querySelector('.badge')?.remove();
+      }
+      activeListItem = targetLi || null;
 
       const avatar = document.getElementById('chatAvatar');
       const headerName = document.getElementById('chatHeaderName');
@@ -719,7 +749,6 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId })
       });
-      li.querySelector('.badge')?.remove();
 
       const box = document.getElementById('chatMessages');
       box.innerHTML = '';
@@ -735,6 +764,7 @@
           data.forEach(msg => {
             const m = Object.assign({}, msg);
             if (!m.text && m.body) m.text = m.body;
+            m.direction = normalizeDirection(m.direction);
             arr.push(m);
           });
         }
@@ -750,6 +780,7 @@
       let lastDate = '';
 
       sorted.forEach(m => {
+        m.direction = normalizeDirection(m.direction);
         const d = formatDate(m.timestamp);
         if (d !== lastDate) {
           const divDate = document.createElement('div');
@@ -910,7 +941,99 @@
 
     // loadAll(); // Commentata per evitare il caricamento prima dell'autenticazione
 
-    function deleteChat(conversationId) {
+    function stopPollingFallback() {
+      if (pollingTimer) {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
+      }
+    }
+
+    function startPollingFallback() {
+      if (pollingTimer) return;
+      pollingTimer = setInterval(() => {
+        refreshData();
+      }, POLLING_INTERVAL_MS);
+    }
+
+    function stopRealtimeUpdates() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      stopPollingFallback();
+    }
+
+    function startRealtimeUpdates() {
+      stopRealtimeUpdates();
+      if (typeof EventSource === 'undefined') {
+        startPollingFallback();
+        return;
+      }
+
+      eventSource = new EventSource('/events');
+      eventSource.onopen = () => {
+        stopPollingFallback();
+      };
+
+      eventSource.onmessage = (event) => {
+        if (!event.data) return;
+        try {
+          const payload = JSON.parse(event.data);
+          handleServerEvent(payload);
+        } catch (err) {
+          console.error('Errore parsing SSE:', err);
+        }
+      };
+
+      eventSource.onerror = () => {
+        console.warn('Connessione SSE persa, attivo polling di fallback.');
+        startPollingFallback();
+      };
+    }
+
+    async function refreshData(targetConversationId) {
+      try {
+        await loadAll();
+        const conversationToReload = targetConversationId || selectedConv;
+        if (conversationToReload) {
+          delete messagesByConv[conversationToReload];
+          const li = document.querySelector(`.chat-list li[data-conversation-id="${conversationToReload}"]`);
+          if (li) {
+            await loadChat(conversationToReload, li);
+          }
+        }
+      } catch (err) {
+        console.error('Errore durante il refresh automatico:', err);
+      }
+    }
+
+    function handleServerEvent(eventPayload) {
+      if (!eventPayload || eventPayload.type !== 'message') return;
+      if (!eventPayload.conversationId) return;
+      refreshData(eventPayload.conversationId);
+    }
+
+    function markUnread(conversationId, event) {
+      if (event) event.stopPropagation();
+      if (!conversationId) return;
+
+      fetch('/mark-unread', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, unreadCount: 1 })
+      }).then(res => {
+        if (!res.ok) return;
+        if (!conversations[conversationId]) {
+          conversations[conversationId] = { unreadCount: 1 };
+        } else {
+          conversations[conversationId].unreadCount = Math.max(conversations[conversationId].unreadCount || 0, 1);
+        }
+        renderSidebar();
+      });
+    }
+
+    function deleteChat(conversationId, event) {
+      if (event) event.stopPropagation();
       if (!confirm(`Sei sicuro di voler cancellare questa conversazione?`)) return;
 
       fetch('/delete-chat', {
