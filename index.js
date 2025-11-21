@@ -18,6 +18,45 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+const conversationCache = {
+  data: null,
+  timestamp: 0,
+  promise: null
+};
+
+function refreshConversationCacheEntry(conversationId, summary) {
+  if (!conversationId) return;
+  if (!conversationCache.data) conversationCache.data = {};
+  if (summary) {
+    conversationCache.data[conversationId] = summary;
+  } else {
+    delete conversationCache.data[conversationId];
+  }
+  conversationCache.timestamp = Date.now();
+}
+
+async function fetchConversationSummariesSnapshot(force = false) {
+  const now = Date.now();
+  if (!force && conversationCache.data && now - conversationCache.timestamp < 3000) {
+    return conversationCache.data;
+  }
+  if (conversationCache.promise) {
+    return conversationCache.promise;
+  }
+  conversationCache.promise = db.ref('conversationSummaries').once('value')
+    .then(snap => {
+      conversationCache.data = snap.val() || {};
+      conversationCache.timestamp = Date.now();
+      conversationCache.promise = null;
+      return conversationCache.data;
+    })
+    .catch(err => {
+      conversationCache.promise = null;
+      throw err;
+    });
+  return conversationCache.promise;
+}
+
 // Gestione client collegati via Server-Sent Events (SSE)
 const sseClients = new Set();
 
@@ -84,6 +123,10 @@ function maskPhone(phone) {
   if (core.length <= 4) return normalized;
   const maskedCore = `${'*'.repeat(core.length - 4)}${core.slice(-4)}`;
   return hasPlus ? `+${maskedCore}` : maskedCore;
+}
+
+function extractDigits(value) {
+  return (value || '').replace(/\D/g, '');
 }
 
 function stripWhatsappPrefix(raw) {
@@ -181,7 +224,9 @@ function proxyTwilioMedia(url, res) {
 
     const request = https.request(options, response => {
       if (response.statusCode >= 400) {
-        reject(new Error(`Twilio media response ${response.statusCode}`));
+        const err = new Error(`Twilio media response ${response.statusCode}`);
+        err.statusCode = response.statusCode;
+        reject(err);
         response.resume();
         return;
       }
@@ -195,6 +240,7 @@ function proxyTwilioMedia(url, res) {
 
       response.pipe(res);
       response.on('end', resolve);
+      response.on('error', reject);
     });
 
     request.on('error', reject);
@@ -220,12 +266,15 @@ async function getOrCreateConversationId(phoneKey) {
 
   if (txnResult.committed && generatedId) {
     const now = Date.now();
-    await db.ref('conversationSummaries').child(conversationId).set({
+    const summaryPayload = {
       phone: phoneKey,
       lastMessageText: '',
       lastMessageAt: now,
-      unreadCount: 0
-    });
+      unreadCount: 0,
+      phoneDigits: extractDigits(phoneKey)
+    };
+    await db.ref('conversationSummaries').child(conversationId).set(summaryPayload);
+    refreshConversationCacheEntry(conversationId, summaryPayload);
   }
 
   return conversationId;
@@ -239,15 +288,20 @@ async function updateConversationSummary(conversationId, { phone, text, timestam
   const result = await summaryRef.transaction(current => {
     const curr = current || {};
     const unread = (curr.unreadCount || 0) + (incrementUnread ? 1 : 0);
+    const resolvedPhone = phone || curr.phone || '';
     return {
-      phone: phone || curr.phone || '',
+      phone: resolvedPhone,
       lastMessageText: text || curr.lastMessageText || '',
       lastMessageAt: timestamp,
-      unreadCount: unread
+      unreadCount: unread,
+      phoneDigits: extractDigits(resolvedPhone) || curr.phoneDigits || ''
     };
   });
-
-  return result.snapshot?.val() || null;
+  const summary = result.snapshot?.val() || null;
+  if (summary) {
+    refreshConversationCacheEntry(conversationId, summary);
+  }
+  return summary;
 }
 
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
@@ -433,19 +487,25 @@ app.post('/status', async (req, res) => {
     });
 
     if (sidInfo && sidInfo.conversationId) {
-      await saveMessageStatus(sidInfo.conversationId, MessageSid, {
-        status: MessageStatus,
-        errorCode: ErrorCode || null,
-        errorMessage: ErrorMessage || null
-      });
+      const updates = [
+        saveMessageStatus(sidInfo.conversationId, MessageSid, {
+          status: MessageStatus,
+          errorCode: ErrorCode || null,
+          errorMessage: ErrorMessage || null
+        })
+      ];
 
       if (sidInfo.messageId) {
-        await db.ref('conversationMessages')
-          .child(sidInfo.conversationId)
-          .child(sidInfo.messageId)
-          .child('status')
-          .set(MessageStatus);
+        updates.push(
+          db.ref('conversationMessages')
+            .child(sidInfo.conversationId)
+            .child(sidInfo.messageId)
+            .child('status')
+            .set(MessageStatus)
+        );
       }
+
+      await Promise.all(updates);
 
       broadcastEvent({
         type: 'status',
@@ -556,10 +616,12 @@ app.post('/send', async (req, res) => {
       params: paramsArray
     });
 
-    await saveMessageStatus(conversationId, twilioMessage.sid, {
-      status: twilioMessage.status || 'queued'
-    });
-    await linkSidToConversation(twilioMessage.sid, conversationId, messageId);
+    await Promise.all([
+      saveMessageStatus(conversationId, twilioMessage.sid, {
+        status: twilioMessage.status || 'queued'
+      }),
+      linkSidToConversation(twilioMessage.sid, conversationId, messageId)
+    ]);
 
     const summary = await updateConversationSummary(conversationId, {
       phone: phoneKey,
@@ -616,14 +678,51 @@ app.post('/send', async (req, res) => {
 // Ritorna l'elenco delle conversazioni (riepilogo)
 app.get('/conversations', async (req, res) => {
   try {
-    const snap = await db.ref('conversationSummaries').orderByChild('lastMessageAt').limitToLast(200).once('value');
-    const data = snap.val() || {};
-    const list = Object.keys(data).map(id => ({ id, ...data[id] }))
-      .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+    const data = await fetchConversationSummariesSnapshot();
+    const list = Object.keys(data || {}).map(id => ({ id, ...data[id] }))
+      .sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0))
+      .slice(0, 200);
     res.json(list);
   } catch (err) {
     console.error('Errore /conversations:', err);
     res.status(500).send('Errore lettura conversazioni');
+  }
+});
+
+app.get('/conversations/search', async (req, res) => {
+  const termRaw = (req.query.term || '').trim();
+  const limitParam = parseInt(req.query.limit, 10);
+  const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 500) : 100;
+
+  if (!termRaw) {
+    return res.status(400).json({ error: 'Parametro term obbligatorio' });
+  }
+
+  const normalizedTerm = termRaw.toLowerCase();
+  const digitTerm = extractDigits(termRaw);
+
+  try {
+    const data = await fetchConversationSummariesSnapshot();
+    const matches = [];
+
+    Object.keys(data).forEach(id => {
+      const summary = data[id] || {};
+      const phone = (summary.phone || '').toLowerCase();
+      const lastText = (summary.lastMessageText || '').toLowerCase();
+      const phoneDigits = summary.phoneDigits || extractDigits(summary.phone || '');
+      const phoneMatches = phone.includes(normalizedTerm) || (digitTerm && phoneDigits.includes(digitTerm));
+      const textMatches = normalizedTerm.length >= 2 && lastText.includes(normalizedTerm);
+
+      if (phoneMatches || textMatches) {
+        matches.push({ id, ...summary });
+      }
+    });
+
+    matches.sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+    res.json(matches.slice(0, limit));
+  } catch (err) {
+    console.error('Errore /conversations/search:', err);
+    res.status(500).json({ error: 'Errore ricerca conversazioni' });
   }
 });
 
@@ -700,6 +799,7 @@ app.post('/read', async (req, res) => {
 
   await db.ref('conversationSummaries').child(conversationId).child('unreadCount').set(0);
   const summarySnap = await db.ref('conversationSummaries').child(conversationId).once('value');
+  refreshConversationCacheEntry(conversationId, summarySnap.val() || null);
   broadcastEvent({
     type: 'summary',
     conversationId,
@@ -717,6 +817,7 @@ app.post('/mark-unread', async (req, res) => {
   try {
     await db.ref('conversationSummaries').child(conversationId).child('unreadCount').set(count);
     const summarySnap = await db.ref('conversationSummaries').child(conversationId).once('value');
+    refreshConversationCacheEntry(conversationId, summarySnap.val() || null);
     broadcastEvent({
       type: 'summary',
       conversationId,
@@ -743,6 +844,7 @@ app.post('/delete-chat', async (req, res) => {
 
     await db.ref('conversationMessages').child(conversationId).remove();
     await db.ref('conversationSummaries').child(conversationId).remove();
+    refreshConversationCacheEntry(conversationId, null);
 
     res.sendStatus(200);
   } catch (err) {
@@ -760,7 +862,9 @@ app.get('/media/messages/:messageSid/:mediaSid', async (req, res) => {
     await proxyTwilioMedia(mediaUrl, res);
   } catch (err) {
     console.error('❌ Errore fetch media messaggio:', err.message);
-    if (!res.headersSent) res.sendStatus(502);
+    if (!res.headersSent) {
+      res.status(err.statusCode || 502).json({ error: 'Impossibile recuperare il media richiesto' });
+    }
   }
 });
 
@@ -773,7 +877,9 @@ app.get('/media/conversations/:serviceSid/:mediaSid', async (req, res) => {
     await proxyTwilioMedia(mediaUrl, res);
   } catch (err) {
     console.error('❌ Errore fetch media conversation:', err.message);
-    if (!res.headersSent) res.sendStatus(502);
+    if (!res.headersSent) {
+      res.status(err.statusCode || 502).json({ error: 'Impossibile recuperare il media richiesto' });
+    }
   }
 });
 
