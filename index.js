@@ -18,10 +18,12 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+const MAX_CACHE_ITEMS = 800;
 const conversationCache = {
   data: null,
   timestamp: 0,
-  promise: null
+  promise: null,
+  listenerInitialized: false
 };
 
 function refreshConversationCacheEntry(conversationId, summary) {
@@ -33,10 +35,24 @@ function refreshConversationCacheEntry(conversationId, summary) {
     delete conversationCache.data[conversationId];
   }
   conversationCache.timestamp = Date.now();
+  enforceCacheSizeBudget();
+}
+
+function enforceCacheSizeBudget() {
+  if (!conversationCache.data) return;
+  const ids = Object.keys(conversationCache.data);
+  if (ids.length <= MAX_CACHE_ITEMS) return;
+  ids.sort((a, b) => {
+    const aTs = conversationCache.data[a]?.lastMessageAt || 0;
+    const bTs = conversationCache.data[b]?.lastMessageAt || 0;
+    return bTs - aTs;
+  });
+  ids.slice(MAX_CACHE_ITEMS).forEach(id => delete conversationCache.data[id]);
 }
 
 async function fetchConversationSummariesSnapshot(force = false) {
   const now = Date.now();
+  ensureConversationCacheListener();
   if (!force && conversationCache.data && now - conversationCache.timestamp < 3000) {
     return conversationCache.data;
   }
@@ -47,6 +63,7 @@ async function fetchConversationSummariesSnapshot(force = false) {
     .then(snap => {
       conversationCache.data = snap.val() || {};
       conversationCache.timestamp = Date.now();
+      enforceCacheSizeBudget();
       conversationCache.promise = null;
       return conversationCache.data;
     })
@@ -55,6 +72,21 @@ async function fetchConversationSummariesSnapshot(force = false) {
       throw err;
     });
   return conversationCache.promise;
+}
+
+function ensureConversationCacheListener() {
+  if (conversationCache.listenerInitialized) return;
+  const summariesRef = db.ref('conversationSummaries');
+  summariesRef.on('child_added', snapshot => {
+    refreshConversationCacheEntry(snapshot.key, snapshot.val());
+  });
+  summariesRef.on('child_changed', snapshot => {
+    refreshConversationCacheEntry(snapshot.key, snapshot.val());
+  });
+  summariesRef.on('child_removed', snapshot => {
+    refreshConversationCacheEntry(snapshot.key, null);
+  });
+  conversationCache.listenerInitialized = true;
 }
 
 // Gestione client collegati via Server-Sent Events (SSE)
@@ -845,6 +877,10 @@ app.post('/delete-chat', async (req, res) => {
     await db.ref('conversationMessages').child(conversationId).remove();
     await db.ref('conversationSummaries').child(conversationId).remove();
     refreshConversationCacheEntry(conversationId, null);
+    broadcastEvent({
+      type: 'delete',
+      conversationId
+    });
 
     res.sendStatus(200);
   } catch (err) {
