@@ -141,6 +141,20 @@
       font-size: 13px;
     }
 
+    .sidebar-filter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--wa-text-secondary);
+      margin-top: 6px;
+    }
+
+    .sidebar-filter label {
+      cursor: pointer;
+      user-select: none;
+    }
+
     .chat-list {
       list-style: none;
       padding: 0;
@@ -415,6 +429,7 @@
       border-top: 1px solid var(--wa-border);
       background: var(--wa-input-bg);
       gap: 8px;
+      position: relative;
     }
 
     .chat-input button.icon-btn {
@@ -467,6 +482,36 @@
 
     .chat-input button.send-btn:hover {
       background: var(--wa-green-dark);
+    }
+
+    .emoji-picker {
+      position: absolute;
+      bottom: 56px;
+      left: 8px;
+      padding: 8px;
+      background: #111b21;
+      border: 1px solid #202c33;
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: repeat(5, 28px);
+      gap: 6px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+      z-index: 5;
+    }
+
+    .emoji-picker button {
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .emoji-picker button:hover {
+      background: rgba(255, 255, 255, 0.08);
     }
 
     /* Placeholder quando nessuna chat è selezionata */
@@ -529,8 +574,8 @@
       </div>
       <div class="sidebar-search">
         <input type="text" id="searchInput" placeholder="Cerca o avvia una nuova chat" oninput="filterChats()">
-        <div style="display:flex; align-items:center; margin-top:6px; gap:6px; font-size:12px; color:var(--wa-text-secondary);">
-          <input type="checkbox" id="unreadOnly" onchange="filterChats()" style="margin:0;">
+        <div class="sidebar-filter">
+          <input type="checkbox" id="unreadOnly" onchange="handleUnreadToggle()" style="margin:0;">
           <label for="unreadOnly">Mostra solo non letti</label>
         </div>
       </div>
@@ -557,11 +602,12 @@
           <p>Seleziona una conversazione a sinistra per iniziare a vedere e inviare messaggi WhatsApp.</p>
         </div>
       </div>
-      <div class="chat-input">
-        <button class="icon-btn" title="Emoji">😊</button>
+      <div class="chat-input" id="chatInputBar">
+        <button class="icon-btn" title="Emoji" id="emojiBtn" onclick="toggleEmojiPicker(event)">😊</button>
         <button class="icon-btn" title="Allega">📎</button>
         <input type="text" id="msgInput" placeholder="Scrivi un messaggio" onkeydown="handleKey(event)">
         <button class="send-btn" onclick="sendMessage()" title="Invia">➤</button>
+        <div class="emoji-picker" id="emojiPicker" style="display:none;"></div>
       </div>
     </div>
   </div>
@@ -574,7 +620,6 @@
       projectId: "aste-florio"
     };
     firebase.initializeApp(firebaseConfig);
-
     const loginBox = document.getElementById('loginBox');
     const appShell = document.getElementById('appShell');
 
@@ -639,11 +684,29 @@
     let conversationsPageSize = 50;
     let eventSource = null;
     let pollingTimer = null;
+    let sidebarRenderPending = false;
+    let loadAllAbortController = null;
+    const searchState = {
+      term: '',
+      resultIds: [],
+      lastRequestId: 0,
+      debounce: null
+    };
     const POLLING_INTERVAL_MS = 12000;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const WEEKDAY_LABELS = ['domenica', 'lunedì', 'martedì', 'mercoledì', 'giovedì', 'venerdì', 'sabato'];
+    const EMOJI_SET = ['😊','😂','😍','🙏','👍','😅','😢','🎉','❤️','🔥','🤔','😎','🙌','👏','🤗'];
+    let emojiPickerReady = false;
 
     async function loadAll() {
+      let controller;
       try {
-        const res = await fetch('/conversations');
+        if (loadAllAbortController) {
+          loadAllAbortController.abort();
+        }
+        controller = new AbortController();
+        loadAllAbortController = controller;
+        const res = await fetch('/conversations', { signal: controller.signal });
         const list = await res.json();
 
         conversations = {};
@@ -657,29 +720,71 @@
 
         conversationsPageSize = 50;
         renderSidebar();
-        filterChats();
+        if (searchState.term) {
+          runSearch(searchState.term);
+        }
       } catch (err) {
+        if (err.name === 'AbortError') return;
         console.error('Errore caricando le conversazioni:', err);
+      } finally {
+        if (loadAllAbortController === controller) {
+          loadAllAbortController = null;
+        }
       }
     }
 
-    function renderSidebar() {
+    function renderSidebar(forceImmediate = false) {
+      if (forceImmediate) {
+        sidebarRenderPending = false;
+        renderSidebarInternal();
+        return;
+      }
+
+      if (sidebarRenderPending) return;
+      sidebarRenderPending = true;
+      requestAnimationFrame(() => {
+        sidebarRenderPending = false;
+        renderSidebarInternal();
+      });
+    }
+
+    function renderSidebarInternal() {
       const ul = document.getElementById('chatList');
       if (!ul) return;
       ul.innerHTML = '';
-      const ids = Object.keys(conversations || {});
+      const unreadOnly = document.getElementById('unreadOnly')?.checked;
+      let ids;
 
-      ids.sort((a, b) => {
-        const aConv = conversations[a] || {};
-        const bConv = conversations[b] || {};
-        const aT = aConv.lastMessageAt || 0;
-        const bT = bConv.lastMessageAt || 0;
-        return bT - aT;
-      });
+      if (searchState.term) {
+        ids = searchState.resultIds.slice();
+      } else {
+        ids = Object.keys(conversations || {});
+        ids.sort((a, b) => {
+          const aConv = conversations[a] || {};
+          const bConv = conversations[b] || {};
+          const aT = aConv.lastMessageAt || 0;
+          const bT = bConv.lastMessageAt || 0;
+          return bT - aT;
+        });
+        ids = ids.slice(0, conversationsPageSize);
+      }
 
-      const limitedIds = ids.slice(0, conversationsPageSize);
+      if (unreadOnly) {
+        ids = ids.filter(id => (conversations[id]?.unreadCount || 0) > 0);
+      }
 
-      limitedIds.forEach(id => {
+      if (!ids.length) {
+        const empty = document.createElement('li');
+        empty.style.padding = '16px';
+        empty.style.color = '#8696a0';
+        empty.style.textAlign = 'center';
+        empty.style.pointerEvents = 'none';
+        empty.textContent = searchState.term ? 'Nessuna conversazione trovata' : 'Nessuna conversazione';
+        ul.appendChild(empty);
+        return;
+      }
+
+      ids.forEach(id => {
         const conv = conversations[id] || {};
         const num = conv.phone || id;
         const lastMsgText = conv.lastMessageText || '';
@@ -695,14 +800,13 @@
           <div class="chat-info">
             <div class="chat-info-top">
               <span class="chat-name">${num}</span>
-              <span class="chat-time">${timestamp ? formatTime(timestamp) : ''}</span>
+                <span class="chat-time">${timestamp ? formatSidebarTimestamp(timestamp) : ''}</span>
             </div>
             <div class="chat-preview-row">
               <span class="chat-preview">${previewText}</span>
               <div class="chat-actions">
                 ${conv.unreadCount ? `<span class="badge">${conv.unreadCount}</span>` : ''}
                 <button class="chat-action-btn" title="Segna come da leggere" onclick="markUnread('${id}', event)">👁</button>
-                <button class="chat-action-btn" title="Cancella chat" onclick="deleteChat('${id}', event)">✕</button>
               </div>
             </div>
           </div>
@@ -719,16 +823,88 @@
 
         ul.appendChild(li);
       });
-
-      filterChats();
     }
-
     function formatDate(ts) {
       return new Date(ts).toLocaleDateString('it-IT');
     }
 
     function formatTime(ts) {
       return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function initEmojiPicker() {
+      if (emojiPickerReady) return;
+      const picker = document.getElementById('emojiPicker');
+      if (!picker) return;
+      picker.innerHTML = '';
+      EMOJI_SET.forEach(emoji => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = emoji;
+        btn.onclick = () => insertEmoji(emoji);
+        picker.appendChild(btn);
+      });
+      emojiPickerReady = true;
+    }
+
+    function toggleEmojiPicker(event) {
+      if (event) event.preventDefault();
+      const picker = document.getElementById('emojiPicker');
+      if (!picker) return;
+      initEmojiPicker();
+      const isVisible = picker.style.display !== 'none';
+      picker.style.display = isVisible ? 'none' : 'grid';
+      document.removeEventListener('click', handleEmojiOutsideClick);
+      if (!isVisible) {
+        setTimeout(() => document.addEventListener('click', handleEmojiOutsideClick));
+      }
+    }
+
+    function handleEmojiOutsideClick(event) {
+      const picker = document.getElementById('emojiPicker');
+      const btn = document.getElementById('emojiBtn');
+      if (!picker || picker.style.display === 'none') return;
+      if (picker.contains(event.target) || (btn && btn.contains(event.target))) return;
+      picker.style.display = 'none';
+      document.removeEventListener('click', handleEmojiOutsideClick);
+    }
+
+    function insertEmoji(emoji) {
+      const input = document.getElementById('msgInput');
+      if (!input) return;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? input.value.length;
+      input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+      const newCaret = start + emoji.length;
+      input.focus();
+      if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(newCaret, newCaret);
+      }
+    }
+
+    function startOfDay(ts) {
+      const date = new Date(ts);
+      date.setHours(0, 0, 0, 0);
+      return date.getTime();
+    }
+
+    function daysDiffFromToday(ts) {
+      if (!ts) return 0;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return Math.round((today.getTime() - startOfDay(ts)) / DAY_MS);
+    }
+
+    function formatSidebarTimestamp(ts) {
+      if (!ts) return '';
+      const diff = daysDiffFromToday(ts);
+      if (diff <= 0) return formatTime(ts);
+      if (diff === 1) return 'ieri';
+      if (diff <= 6) {
+        const date = new Date(ts);
+        return WEEKDAY_LABELS[date.getDay()];
+      }
+      return new Date(ts).toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
     }
 
     function normalizeDirection(dir) {
@@ -997,28 +1173,71 @@
     }
 
     function filterChats() {
-      const term = document.getElementById('searchInput').value.toLowerCase();
-      const unreadOnly = document.getElementById('unreadOnly').checked;
-      const items = document.querySelectorAll('#chatList li');
-      items.forEach(li => {
-        const nameEl = li.querySelector('.chat-name');
-        const previewEl = li.querySelector('.chat-preview');
-        const text = ((nameEl?.textContent || '') + ' ' + (previewEl?.textContent || '')).toLowerCase();
-        const convId = li.dataset.conversationId;
-        const unreadCount = (conversations[convId]?.unreadCount) || 0;
-        const matchesText = !term || text.includes(term);
-        const matchesUnread = !unreadOnly || unreadCount > 0;
-        li.style.display = matchesText && matchesUnread ? '' : 'none';
-      });
+      const inputEl = document.getElementById('searchInput');
+      if (!inputEl) return;
+      const term = inputEl.value.trim();
+      searchState.term = term;
+
+      if (searchState.debounce) {
+        clearTimeout(searchState.debounce);
+        searchState.debounce = null;
+      }
+
+      if (!term) {
+        searchState.lastRequestId += 1;
+        searchState.resultIds = [];
+        renderSidebar(true);
+        return;
+      }
+
+      searchState.debounce = setTimeout(() => {
+        runSearch(term);
+      }, 250);
+    }
+
+    function handleUnreadToggle() {
+      renderSidebar(true);
+    }
+
+    async function runSearch(term) {
+      const currentRequestId = ++searchState.lastRequestId;
+      try {
+        const response = await fetch(`/conversations/search?term=${encodeURIComponent(term)}&limit=200`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const list = await response.json();
+        if (currentRequestId !== searchState.lastRequestId) return;
+        const ids = [];
+        if (Array.isArray(list)) {
+          list.forEach(conv => {
+            if (conv && conv.id) {
+              conversations[conv.id] = { ...(conversations[conv.id] || {}), ...conv };
+              ids.push(conv.id);
+            }
+          });
+        }
+        searchState.resultIds = ids;
+      } catch (err) {
+        if (currentRequestId === searchState.lastRequestId) {
+          searchState.resultIds = [];
+        }
+        console.error('Errore durante la ricerca conversazioni:', err);
+      } finally {
+        if (currentRequestId === searchState.lastRequestId) {
+          renderSidebar(true);
+        }
+      }
     }
 
     document.getElementById('chatList').addEventListener('scroll', (e) => {
+      if (searchState.term) return;
       const el = e.target;
       if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
         const total = Object.keys(conversations || {}).length;
         if (conversationsPageSize < total) {
           conversationsPageSize += 50;
-          renderSidebar();
+          renderSidebar(true);
         }
       }
     });
